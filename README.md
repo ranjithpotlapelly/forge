@@ -1,5 +1,7 @@
 # Forge
 
+**Repo:** https://github.com/ranjithpotlapelly/forge
+
 A self-hosted repo copilot: it indexes a codebase, answers deep questions with
 file+line citations, and — with your approval — plans a fix, edits the code,
 runs the tests, and opens a pull request.
