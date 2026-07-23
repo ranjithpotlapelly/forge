@@ -136,5 +136,12 @@ shared pieces are promoted into `core/` — no rewrite.
 | 7 | Action (MCP tools + approval gates + PR flow) | in progress — tools + approval gate done, PR flow (commit/push/open_pr) pending |
 | 8 | Interface (Chainlit chat) | done |
 | 9 | Deployment (Docker packaging) | done |
+| 10 | Ingest source (structure-aware repo indexing) | done |
 
 We build one phase per step, each testable on its own before the next.
+Phase 10 fills a gap left open since Phase 3: `core/ingest.py` was scaffolded
+in Phase 1 but never implemented — every earlier phase indexed 3 hardcoded
+test documents instead of real code. `adapters/ingest_fs.py` now walks a
+repo and yields real per-function/class chunks via Python's stdlib `ast`
+(not tree-sitter — dropped in Phase 9 as an unused dependency, and `ast`
+already does the job for the language this repo is written in).

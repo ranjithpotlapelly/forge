@@ -4,6 +4,7 @@ config['*']['adapter'] name to a concrete class.
 from __future__ import annotations
 import sys
 from core.engine import Engine
+from core.ingest import IngestSource
 from core.llm import LLMClient
 from core.observability import Tracing
 from core.retriever import Retriever
@@ -76,3 +77,11 @@ def build_tools(cfg: dict) -> list[Tool]:
             require_approval_for=set(cfg["forge"]["require_approval_for"]),
         )
     raise ValueError(f"Unknown tools adapter: {adapter}")
+
+def build_ingest(cfg: dict) -> IngestSource:
+    section = cfg["ingest"]
+    adapter = section["adapter"]
+    if adapter == "fs":
+        from adapters.ingest_fs import FsIngestSource
+        return FsIngestSource(repo_path=cfg["forge"]["repo_path"], languages=cfg["forge"]["languages"])
+    raise ValueError(f"Unknown ingest adapter: {adapter}")

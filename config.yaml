@@ -54,9 +54,13 @@ tools:
   server_script: adapters/mcp_servers/workspace_server.py
   workspace: ./.data/workspace
 
+# --- Knowledge (Phase 3) ingest source (Phase 10) ---
+ingest:
+  adapter: fs                  # -> adapters/ingest_fs.py (ast-based chunking for .py, whole-file fallback otherwise)
+
 # --- Forge product settings ---
 forge:
-  repo_path: ""                        # local checkout of the repo to index
+  repo_path: "."                       # local checkout of the repo to index; "." = Forge indexing itself
   languages: [python, javascript, typescript, go]
   # Anything that touches the outside world pauses for human approval:
   require_approval_for: [write_file, commit, push, open_pr]
