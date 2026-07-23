@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.data/*
+!.data/.gitkeep
+
+# Chainlit auto-generated local cache (config.toml, translations/)
+.chainlit/
+
+# Editor/tool state, not project source
+.idea/
+.claude/

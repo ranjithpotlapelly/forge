@@ -1,0 +1,45 @@
+# Forge dependencies, grouped by build phase.
+# Version floors (>=) are used so first install pulls current releases.
+# After a successful install, run `pip freeze > requirements.lock` to pin exact versions.
+# Kept in sync with actual imports across core/adapters/product/app — see
+# Phase 9 notes: this used to carry llama-index/tree-sitter (Phase 3 went a
+# different direction: chromadb + raw ollama embeddings, no llama-index) and
+# the full arize-phoenix package (Phase 6 hit a hard build blocker — see below).
+
+# --- Phase 1: scaffold (needed to run the smoke test) ---
+pyyaml>=6.0
+python-dotenv>=1.0
+
+# --- Phase 2: Reasoning ---
+ollama>=0.3
+
+# --- Phase 3: Knowledge (RAG over code) ---
+chromadb>=0.5
+
+# --- Phase 4/5: Orchestration + State ---
+langgraph>=0.2
+langgraph-checkpoint-sqlite>=1.0
+
+# --- Phase 6: Observability ---
+# Not `arize-phoenix`: it depends on sqlean-py, which ships no prebuilt
+# wheels on any platform and needs a C++ toolchain to build from source —
+# not available in python:3.14-slim (or the original Windows dev box) either.
+# Phoenix itself runs as a container (docker-compose.yml); this is just the
+# client that sends it spans. openinference-instrumentation-langchain isn't
+# imported directly anywhere — phoenix.otel.register(auto_instrument=True)
+# discovers and uses it via introspection.
+arize-phoenix-otel>=0.9
+openinference-instrumentation-langchain>=0.1
+
+# --- Phase 7: Action (tools via MCP) ---
+# Official SDK, not langchain-mcp-adapters: nothing else in this stack is
+# LangChain-wrapped (core.tools.Tool is our own port, the LLM adapter is raw
+# ollama), so the langchain Tool-object conversion that package exists for
+# would just be unused overhead.
+mcp>=1.0
+
+# --- Phase 8: Interface ---
+chainlit>=1.1
+# app/run_chainlit.py monkeypatches this directly (works around a
+# nest_asyncio/anyio incompatibility in Chainlit's own CLI startup).
+nest-asyncio>=1.5

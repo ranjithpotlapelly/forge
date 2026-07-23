@@ -1,0 +1,62 @@
+# Forge — composition root.
+# Each port names the adapter that fills it. Swapping a tool (e.g. chroma -> qdrant,
+# ollama -> a hosted API) is a one-line change here plus one adapter file. No logic moves.
+
+app:
+  name: Forge
+  env: dev
+
+# --- Reasoning (Phase 2) ---
+llm:
+  adapter: ollama              # -> adapters/llm_ollama.py
+  model: llama3:latest         # primary reasoning model
+  host: ${OLLAMA_HOST}         # from .env; falls back to http://localhost:11434
+  temperature: 0.2
+
+# The code-EDIT step (Phase 7) gets its own slot so patch quality can be upgraded
+# independently. Local by default; point this at a hosted endpoint when you're ready.
+code_model:
+  adapter: ollama
+  model: llama3.2:1b           # smaller/faster model for the code-edit step
+
+# --- Knowledge (Phase 3) ---
+embeddings:
+  adapter: ollama
+  model: nomic-embed-text      # light + fast on CPU
+
+retriever:
+  adapter: chroma              # -> adapters/retriever_chroma.py (embedded, no server)
+  path: ./.data/chroma
+  collection: forge_code
+  top_k: 8
+
+# --- Orchestration (Phase 4) ---
+engine:
+  adapter: langgraph           # -> adapters/engine_langgraph.py (wires product/graph.py nodes)
+  checkpoint_path: ./.data/checkpoints.db   # Phase 5: per-thread graph state, separate file from the product store
+
+# --- State (Phase 5) ---
+store:
+  adapter: sqlite              # -> adapters/store_sqlite.py
+  path: ./.data/forge.db
+
+# --- Observability (Phase 6) ---
+observability:
+  adapter: phoenix             # -> adapters/observability_phoenix.py
+  enabled: true
+  endpoint: ${PHOENIX_ENDPOINT}        # OTLP/gRPC; from .env — localhost natively, phoenix:4317 in docker-compose
+  project_name: forge
+
+# --- Action (Phase 7) ---
+tools:
+  adapter: mcp                 # -> adapters/tools_mcp.py (official `mcp` SDK, not
+                                # langchain-mcp-adapters — nothing else here is LangChain-wrapped)
+  server_script: adapters/mcp_servers/workspace_server.py
+  workspace: ./.data/workspace
+
+# --- Forge product settings ---
+forge:
+  repo_path: ""                        # local checkout of the repo to index
+  languages: [python, javascript, typescript, go]
+  # Anything that touches the outside world pauses for human approval:
+  require_approval_for: [write_file, commit, push, open_pr]

@@ -1,0 +1,43 @@
+# Phase 9: Forge itself is packaged and runs here too now. Phoenix has run as
+# a container since Phase 6 — the native `arize-phoenix` pip package depends
+# on sqlean-py, which ships no prebuilt wheels and needs a C++ toolchain to
+# build (not available on every CPU-only Windows dev box). Ollama stays
+# native/host-installed either way: it owns the GPU/model weights, and
+# containerizing it is a separate concern this project doesn't need.
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"   # UI + OTLP/HTTP
+      - "4317:4317"   # OTLP/gRPC
+
+  forge:
+    build: .
+    ports:
+      # Host 8010, not 8000: this machine already has an unrelated project's
+      # ChromaDB container bound to host port 8000. Container-internal port
+      # stays 8000 (Chainlit's default).
+      - "8010:8000"
+    environment:
+      # host.docker.internal reaches the host's natively-installed Ollama.
+      # Docker Desktop (Windows/Mac) resolves this out of the box; the
+      # extra_hosts entry below makes it work on Linux too.
+      OLLAMA_HOST: http://host.docker.internal:11434
+      # Service-name DNS on the compose network, not localhost.
+      PHOENIX_ENDPOINT: http://phoenix:4317
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Named volume, not a bind mount: Chroma's internal SQLite, the product
+      # store, and the LangGraph checkpointer all live under .data/, and
+      # SQLite's locking doesn't work reliably over Docker Desktop's Windows
+      # bind-mount filesystem translation — it crashed on startup with
+      # "sqlite3.OperationalError: disk I/O error" on a bind mount. A named
+      # volume uses Docker's real storage driver instead, so it just works;
+      # the tradeoff is you can't browse .data/ directly from Windows.
+      - forge_data:/app/.data
+    depends_on:
+      - phoenix
+
+volumes:
+  forge_data:
