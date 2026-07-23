@@ -133,23 +133,37 @@ shared pieces are promoted into `core/` — no rewrite.
 | 4 | Orchestration (LangGraph decision graph) | done |
 | 5 | State (SQLite checkpointer + store) | done |
 | 6 | Observability (Phoenix tracing) | done |
-| 7 | Action (MCP tools + approval gates + PR flow) | in progress — tools + approval gate done, PR flow (commit/push/open_pr) pending |
+| 7 | Action (MCP tools + approval gates + PR flow) | in progress — tools + approval gate done, `open_pr` pending |
 | 8 | Interface (Chainlit chat) | done |
 | 9 | Deployment (Docker packaging) | done |
 | 10 | Ingest source (structure-aware repo indexing) | done |
 | 11 | Code-edit tool (dedicated code_model + gated write_file) | done |
+| 12 | Commit/push tools (gated, sandboxed git identity) | done |
 
 We build one phase per step, each testable on its own before the next.
-Phase 11 fills the other gap `code_model` had sat reserved for since Phase
-2: `product/code_edit.py` asks it for a full replacement file and applies it
-through the existing approval-gated `write_file` MCP tool — no new approval
-mechanism, just wiring. It only operates inside the sandboxed workspace
-(`.data/workspace/`), same boundary Phase 7 set for `write_file` — it can't
-touch the live Forge source tree. `open_pr`/`commit`/`push` (the rest of
-Phase 7's original scope) are still pending.
+
 Phase 10 fills a gap left open since Phase 3: `core/ingest.py` was scaffolded
 in Phase 1 but never implemented — every earlier phase indexed 3 hardcoded
 test documents instead of real code. `adapters/ingest_fs.py` now walks a
 repo and yields real per-function/class chunks via Python's stdlib `ast`
 (not tree-sitter — dropped in Phase 9 as an unused dependency, and `ast`
 already does the job for the language this repo is written in).
+
+Phase 11 fills the other gap `code_model` had sat reserved for since Phase
+2: `product/code_edit.py` asks it for a full replacement file and applies it
+through the existing approval-gated `write_file` MCP tool — no new approval
+mechanism, just wiring. It only operates inside the sandboxed workspace
+(`.data/workspace/`), same boundary Phase 7 set for `write_file` — it can't
+touch the live Forge source tree.
+
+Phase 12 adds `commit`/`push` to the same local MCP server, both gated the
+same way `write_file` already was — `commit`/`push` were in
+`forge.require_approval_for` since Phase 1, just unimplemented until now.
+Both operate on `.data/workspace/`'s own git repo (a local-only identity, no
+`--global` config touched). `open_pr` is the one entry in that list still
+pending.
+
+See [WORKFLOW.md](WORKFLOW.md) for the full architecture walkthrough
+(Java/Spring analogies, end-to-end request flows, diagrams) and
+[WORKFLOW_CHANGES.md](WORKFLOW_CHANGES.md) for what changed from the
+original design plan.
