@@ -11,14 +11,22 @@ from core.retriever import Retriever
 from core.store import StateStore
 from core.tools import Tool
 
+def _build_ollama_llm(section: dict, cfg: dict) -> LLMClient:
+    from adapters.llm_ollama import OllamaLLM
+    rest = {k: v for k, v in section.items() if k not in ("adapter", "model", "host")}
+    return OllamaLLM(model=section["model"], host=section.get("host", cfg["llm"]["host"]), **rest)
+
 def build_llm(cfg: dict) -> LLMClient:
     section = cfg["llm"]
-    adapter = section["adapter"]
-    if adapter == "ollama":
-        from adapters.llm_ollama import OllamaLLM
-        rest = {k: v for k, v in section.items() if k not in ("adapter", "model", "host")}
-        return OllamaLLM(model=section["model"], host=section["host"], **rest)
-    raise ValueError(f"Unknown llm adapter: {adapter}")
+    if section["adapter"] == "ollama":
+        return _build_ollama_llm(section, cfg)
+    raise ValueError(f"Unknown llm adapter: {section['adapter']}")
+
+def build_code_model(cfg: dict) -> LLMClient:
+    section = cfg["code_model"]
+    if section["adapter"] == "ollama":
+        return _build_ollama_llm(section, cfg)
+    raise ValueError(f"Unknown code_model adapter: {section['adapter']}")
 
 def build_retriever(cfg: dict) -> Retriever:
     section = cfg["retriever"]

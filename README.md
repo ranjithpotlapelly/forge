@@ -137,8 +137,16 @@ shared pieces are promoted into `core/` — no rewrite.
 | 8 | Interface (Chainlit chat) | done |
 | 9 | Deployment (Docker packaging) | done |
 | 10 | Ingest source (structure-aware repo indexing) | done |
+| 11 | Code-edit tool (dedicated code_model + gated write_file) | done |
 
 We build one phase per step, each testable on its own before the next.
+Phase 11 fills the other gap `code_model` had sat reserved for since Phase
+2: `product/code_edit.py` asks it for a full replacement file and applies it
+through the existing approval-gated `write_file` MCP tool — no new approval
+mechanism, just wiring. It only operates inside the sandboxed workspace
+(`.data/workspace/`), same boundary Phase 7 set for `write_file` — it can't
+touch the live Forge source tree. `open_pr`/`commit`/`push` (the rest of
+Phase 7's original scope) are still pending.
 Phase 10 fills a gap left open since Phase 3: `core/ingest.py` was scaffolded
 in Phase 1 but never implemented — every earlier phase indexed 3 hardcoded
 test documents instead of real code. `adapters/ingest_fs.py` now walks a
