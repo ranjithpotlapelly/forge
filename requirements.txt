@@ -43,3 +43,8 @@ chainlit>=1.1
 # app/run_chainlit.py monkeypatches this directly (works around a
 # nest_asyncio/anyio incompatibility in Chainlit's own CLI startup).
 nest-asyncio>=1.5
+
+# --- Phase 13: open_pr tool (GitHub REST API) ---
+# A direct HTTP call, not an SDK: PyGithub/ghapi would be unused overhead for
+# one endpoint (POST /repos/{owner}/{repo}/pulls).
+requests>=2.31

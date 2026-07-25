@@ -40,7 +40,7 @@ know it:
 
 ```mermaid
 flowchart LR
-    product["product/<br/>(business logic:<br/>graph nodes, approval,<br/>code-edit, indexing)"]
+    product["product/<br/>(business logic:<br/>approval, code-edit,<br/>indexing)"]
     core["core/<br/>(port interfaces —<br/>no vendor imports)"]
     adapters["adapters/<br/>(Ollama, Chroma, SQLite,<br/>LangGraph, MCP, Phoenix)"]
     app["app/<br/>(composition root)"]
@@ -56,6 +56,15 @@ flowchart LR
 - `adapters/` know about vendors (Ollama, Chroma, SQLite, MCP) but not about Forge.
 - `product/` knows about Forge (approval, code-edit, indexing) but never imports a vendor.
 - `app/` is the only place that knows *which* adapter fills *which* port.
+
+One deliberate exception: the Q&A decision graph's node functions
+(`retrieve`/`has_context`/`answer`/`decline`) live in
+`adapters/engine_langgraph.py`, not `product/`. They used to live in
+`product/graph.py`, with the adapter importing them — but that meant
+`adapters/` importing `product/`, backwards from the rule above. Since
+LangGraph's `add_node`/`add_conditional_edges` wiring and the functions it
+calls are inseparable in practice, they were merged into the adapter instead.
+`core/engine.py` (the port everything else depends on) is unaffected either way.
 
 This is exactly why Spring code compiles against `DataSource` and not against
 `OracleDriver`. Same discipline, same payoff: every adapter swap so far
@@ -102,7 +111,7 @@ carrying a context object.
 Java: a Lucene index, but matching on meaning rather than keywords.
 
 **Step 5 — has_context decision.** A plain Python function
-(`product/graph.py:has_context`), not a model call: if the top hit's score
+(`adapters/engine_langgraph.py:has_context`), not a model call: if the top hit's score
 is `>= MIN_RELEVANCE` (0.2), route to `answer`; otherwise route to
 `decline`. This is a real branch in the compiled `StateGraph`
 (`add_conditional_edges`), so it shows up as its own span in Phoenix.
@@ -134,9 +143,9 @@ flowchart LR
     X --> O
 ```
 
-## 5. The other flow: code-edit, commit, push
+## 5. The other flow: code-edit, commit, push, open_pr
 
-Three independent, approval-gated capabilities, each a plain Python function
+Four independent, approval-gated capabilities, each a plain Python function
 call — not graph nodes, no checkpointed pause/resume:
 
 - `product/code_edit.py:edit_file()` — reads a file (ungated), asks
@@ -144,6 +153,12 @@ call — not graph nodes, no checkpointed pause/resume:
   `write_file` MCP tool
 - `write_file`, `commit`, `push` — MCP tools on the same local server, each
   checked against `requires_approval` before running
+- `open_pr` — not an MCP tool. `adapters/github_pr.py:OpenPrTool` implements
+  `core.tools.Tool` directly against the GitHub REST API, so it stays out of
+  the MCP server's stdio process (printing a diff there would corrupt the
+  JSON-RPC channel that process's stdout doubles as). Reads `GITHUB_TOKEN`
+  once, via `app/config_loader.py`'s `${GITHUB_TOKEN}` expansion —
+  `adapters/github_pr.py` never touches `os.environ` itself.
 
 The gate itself (`product/approval.py:run_tool`) is a synchronous callback:
 
@@ -172,6 +187,9 @@ flowchart LR
     C --> G3{push<br/>approved?}
     G3 -->|denied| D3[ApprovalDenied<br/>nothing pushed]
     G3 -->|approved| PU[push]
+    PU --> G4{open_pr<br/>approved?}
+    G4 -->|denied| D4[ApprovalDenied<br/>no PR, zero network calls]
+    G4 -->|approved| OP[open_pr:<br/>show diff + title/body,<br/>then POST /pulls]
 ```
 
 Both `commit` and `push` run against `.data/workspace/`, a sandboxed
@@ -179,6 +197,16 @@ directory that `write_file`/`read_file` are also confined to (path-escape
 checked in `_resolve()`). `_ensure_git_repo()` initializes that sandbox as
 its own git repo on first use, with a local-only identity (`git config`
 without `--global` — never touches your real git identity).
+
+`open_pr` runs last, against that same workspace repo: it derives
+`owner/repo` from its `origin` remote, computes `git diff base...head`, and
+calls `self._display(...)` (defaults to `print`) with the title, body, and
+full diff before making any HTTP request — so the only thing standing
+between a human and an actual `POST /repos/{owner}/{repo}/pulls` is
+`run_tool`'s `approve()` check. Because `run_tool` never calls `tool.run()`
+when `approve()` returns `False`, a denied `open_pr` cannot reach the
+network — proven against a real local HTTP server (not mocked) in
+`app/open_pr_smoke_test.py`.
 
 ## 6. Where data lives
 
@@ -204,12 +232,13 @@ the next began.
 | 4 | Orchestration (3-node LangGraph: retrieve → has_context → answer/decline) | done |
 | 5 | State (SQLite product store + LangGraph SQLite checkpointer) | done |
 | 6 | Observability (Phoenix tracing) | done |
-| 7 | Action (`read_file`/`write_file` MCP tools + approval gate) | in progress — `open_pr` pending |
+| 7 | Action (`read_file`/`write_file` MCP tools + approval gate) | done |
 | 8 | Interface (Chainlit chat) | done |
 | 9 | Deployment (Docker packaging) | done |
 | 10 | Ingest source (`ast`-based structure-aware chunking) | done |
 | 11 | Code-edit tool (dedicated `code_model` + gated `write_file`) | done |
 | 12 | Commit/push tools (gated, sandboxed workspace) | done |
+| 13 | `open_pr` tool (direct GitHub REST API adapter, same approval gate) | done |
 
 ## 8. Upgrade path
 
@@ -272,8 +301,8 @@ is a config change, not a rewrite. Same principle, applied to every layer.
    schemas.
 3. **Ground everything.** Answers without citations are guesses.
 4. **Gate every side effect.** Reads flow freely; writes stop for a human —
-   true today for `write_file`/`commit`/`push`, when the caller supplies an
-   `approve` callback.
+   true today for `write_file`/`commit`/`push`/`open_pr`, when the caller
+   supplies an `approve` callback.
 5. **Trace before you need it.** Observability came before Action, on
    purpose — every hard bug hit while building later phases was diagnosed
    partly by reading spans, not just stack traces.
@@ -310,7 +339,7 @@ writes them into the same Chroma collection the chat UI queries.
 Open `http://localhost:8501`, type a question. The full answer appears at
 once with a **Sources** list of `path:line` citations underneath.
 
-**D. Propose an edit, commit, push**
+**D. Propose an edit, commit, push, open a PR**
 
 Not reachable from the chat UI yet — call the workflow functions directly:
 
@@ -330,7 +359,21 @@ edit_file(
 )
 ```
 
-`commit`/`push` follow the same `run_tool(tool, kwargs, approve)` pattern.
+`commit`/`push`/`open_pr` all follow the same `run_tool(tool, kwargs, approve)`
+pattern:
+
+```python
+from product.approval import run_tool
+
+run_tool(
+    tools["open_pr"],
+    {"title": "...", "body": "...", "base": "main", "head": "forge/task-..."},
+    approve=lambda tool, kwargs: True,   # your own approval logic goes here
+)
+```
+
+`open_pr.run()` prints the title, body, and full `git diff base...head`
+before it ever calls the GitHub API, and returns the created PR's URL.
 
 **E. Check what actually happened**
 
@@ -362,16 +405,12 @@ In priority order:
 3. **Remove or use `product/schema.py`'s `ProposedPR`/`PlanStep`.** Defined,
    never imported anywhere — dead code that implies a planning step which
    doesn't exist.
-4. **Add the `open_pr` tool.** The one entry in `forge.require_approval_for`
-   nothing was built for. Needs a GitHub API client behind a new `core/`
-   port, plus `GITHUB_TOKEN` (reserved in `.env.template`, unused since
-   Phase 1).
-5. **Add a test-runner tool with a retry loop.** `code_edit.py` writes a
+4. **Add a test-runner tool with a retry loop.** `code_edit.py` writes a
    file and stops; there's no run-tests-and-retry-on-failure step.
-6. **Consider a lexical/keyword pre-filter for retrieval.** Semantic-only
+5. **Consider a lexical/keyword pre-filter for retrieval.** Semantic-only
    today; fine at this repo's size, worth revisiting at scale.
-7. **Enforce a context-token budget explicitly** before calling
+6. **Enforce a context-token budget explicitly** before calling
    `llm.generate()` — nothing currently checks this.
-8. **Keep `WORKFLOW.md` current, not a PDF.** Update Section 7's status
+7. **Keep `WORKFLOW.md` current, not a PDF.** Update Section 7's status
    table the same way `README.md`'s roadmap table gets updated, one phase at
    a time.

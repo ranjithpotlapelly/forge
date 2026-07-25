@@ -9,7 +9,7 @@ import sys
 from app.config_loader import load_config
 from app.wiring import build_engine
 from core.types import Chunk
-from product.graph import has_context
+from adapters.engine_langgraph import has_context
 
 def main() -> int:
     cfg = load_config()

@@ -9,9 +9,10 @@ app:
 # --- Reasoning (Phase 2) ---
 llm:
   adapter: ollama              # -> adapters/llm_ollama.py
-  model: llama3:latest         # primary reasoning model
+  model: qwen3:8b               # primary reasoning model; run `ollama pull qwen3:8b` first
   host: ${OLLAMA_HOST}         # from .env; falls back to http://localhost:11434
   temperature: 0.2
+  num_ctx: 16384                # plan/edit/test loop needs target file + plan + test output in one prompt
 
 # The code-EDIT step (Phase 7) gets its own slot so patch quality can be upgraded
 # independently. Local by default; point this at a hosted endpoint when you're ready.
@@ -32,7 +33,7 @@ retriever:
 
 # --- Orchestration (Phase 4) ---
 engine:
-  adapter: langgraph           # -> adapters/engine_langgraph.py (wires product/graph.py nodes)
+  adapter: langgraph           # -> adapters/engine_langgraph.py (graph + node logic both live here)
   checkpoint_path: ./.data/checkpoints.db   # Phase 5: per-thread graph state, separate file from the product store
 
 # --- State (Phase 5) ---
@@ -57,6 +58,11 @@ tools:
 # --- Knowledge (Phase 3) ingest source (Phase 10) ---
 ingest:
   adapter: fs                  # -> adapters/ingest_fs.py (ast-based chunking for .py, whole-file fallback otherwise)
+
+# --- GitHub (Phase 13): open_pr tool -> adapters/github_pr.py ---
+github:
+  token: ${GITHUB_TOKEN}        # from .env; never hardcode, never logged
+  api_base: https://api.github.com
 
 # --- Forge product settings ---
 forge:

@@ -1,15 +1,29 @@
-"""Local MCP server (Phase 7/12): filesystem + git tools scoped to a sandbox
-workspace directory. Run as a subprocess over stdio by adapters/tools_mcp.py
-— never imported directly by the rest of Forge.
+"""Local MCP server (Phase 7/12/13): filesystem + git + test-runner tools
+scoped to a sandbox workspace directory. Run as a subprocess over stdio by
+adapters/tools_mcp.py — never imported directly by the rest of Forge.
 """
 from __future__ import annotations
+import json
+import os
+import shutil
+import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 WORKSPACE = Path(sys.argv[1] if len(sys.argv) > 1 else "./.data/workspace").resolve()
 WORKSPACE.mkdir(parents=True, exist_ok=True)
+
+def _rmtree_force(path: Path) -> None:
+    # git marks object files read-only; Windows (unlike POSIX) blocks
+    # deleting a read-only file even with directory write permission, so a
+    # plain shutil.rmtree fails on any real .git dir with WinError 5.
+    def _on_error(func, p, exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    shutil.rmtree(path, onexc=_on_error)
 
 mcp = FastMCP("forge-workspace")
 
@@ -76,6 +90,100 @@ def push(remote: str = "origin", branch: str = "main") -> str:
     has already been added (e.g. via a real `git remote add origin ...`
     against a checkout you control)."""
     return _run_git("push", remote, branch)
+
+# marker file -> command, checked in this order. The pytest command runs via
+# `sys.executable -m pytest` rather than a bare "pytest" binary lookup: this
+# server's own subprocess inherits its caller's PATH, which doesn't include
+# the venv's Scripts/ dir when the venv isn't "activated" (true of how this
+# whole project has been run) — `-m` guarantees the same interpreter this
+# server itself runs under, so an installed pytest is always found.
+_BUILD_COMMANDS: list[tuple[str, list[str]]] = [
+    ("pom.xml", ["mvn", "-q", "test"]),
+    ("build.gradle", ["gradle", "test"]),
+    ("pytest.ini", [sys.executable, "-m", "pytest", "-q"]),
+    ("pyproject.toml", [sys.executable, "-m", "pytest", "-q"]),
+]
+
+_MAX_OUTPUT_CHARS = 4000
+
+def _detect_build_command() -> list[str]:
+    for marker, command in _BUILD_COMMANDS:
+        if (WORKSPACE / marker).exists():
+            return command
+    markers = ", ".join(m for m, _ in _BUILD_COMMANDS)
+    raise ValueError(f"no recognized build system in {WORKSPACE} (looked for: {markers})")
+
+@mcp.tool()
+def run_tests(timeout_s: int = 300) -> str:
+    """Run the workspace's test suite (auto-detects Maven/Gradle/pytest from
+    pom.xml/build.gradle/pytest.ini/pyproject.toml). Read-only in effect —
+    runs inside the workspace sandbox only and changes nothing outside it —
+    so Forge does not gate this behind human approval. Returns a JSON string:
+    {passed, exit_code, output, duration_s}. `output` is stdout+stderr,
+    truncated to the last ~4000 chars so a full Maven/Gradle run doesn't blow
+    a model's context window when fed into a retry prompt."""
+    command = _detect_build_command()
+    start = time.monotonic()
+    try:
+        result = subprocess.run(
+            command, cwd=WORKSPACE, capture_output=True, text=True,
+            timeout=timeout_s, stdin=subprocess.DEVNULL,
+        )
+        exit_code = result.returncode
+        output = result.stdout + result.stderr
+    except subprocess.TimeoutExpired as e:
+        exit_code = -1
+        output = (e.stdout or "") + (e.stderr or "") + f"\n[timed out after {timeout_s}s]"
+    duration_s = round(time.monotonic() - start, 2)
+    if len(output) > _MAX_OUTPUT_CHARS:
+        output = output[-_MAX_OUTPUT_CHARS:]
+    return json.dumps({
+        "passed": exit_code == 0,
+        "exit_code": exit_code,
+        "output": output,
+        "duration_s": duration_s,
+    })
+
+@mcp.tool()
+def prepare_workspace(repo_path: str, branch_prefix: str = "forge/task") -> str:
+    """Clone the indexed source repo into the workspace on a fresh branch, so
+    a plan's target_path values (relative to the source repo root) resolve
+    1:1 here. DESTRUCTIVE: wipes whatever was previously in the workspace
+    sandbox first — a full fresh clone, not an in-place sync. Fails fast if
+    the source repo has uncommitted changes. Not gated behind approval: it
+    only ever reads the source repo and writes into the sandbox, never the
+    reverse."""
+    source = Path(repo_path).resolve()
+    if not (source / ".git").exists():
+        raise ValueError(f"{source} is not a git repository")
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=source, capture_output=True,
+        text=True, timeout=30, stdin=subprocess.DEVNULL,
+    )
+    if status.returncode != 0:
+        raise RuntimeError(f"git status failed in {source}: {status.stderr.strip()}")
+    if status.stdout.strip():
+        raise ValueError(
+            f"{source} has uncommitted changes — commit or stash before starting a task:\n"
+            f"{status.stdout.strip()}"
+        )
+
+    if WORKSPACE.exists():
+        _rmtree_force(WORKSPACE)
+    clone = subprocess.run(
+        ["git", "clone", str(source), str(WORKSPACE)], capture_output=True,
+        text=True, timeout=120, stdin=subprocess.DEVNULL,
+    )
+    if clone.returncode != 0:
+        raise RuntimeError(f"git clone failed: {clone.stderr.strip()}")
+
+    branch = f"{branch_prefix}-{int(time.time())}"
+    _run_git("checkout", "-b", branch)
+    # Fresh clone has no local identity of its own yet.
+    _run_git("config", "user.name", "Forge Agent")
+    _run_git("config", "user.email", "forge-agent@localhost")
+    return json.dumps({"branch": branch, "source": str(source), "workspace": str(WORKSPACE)})
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

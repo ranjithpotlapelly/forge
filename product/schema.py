@@ -19,6 +19,8 @@ class Issue:
     title: str
     body: str
 
+# Consumed by the plan node the planner phase will add — not wired to
+# anything yet.
 @dataclass
 class PlanStep:
     description: str

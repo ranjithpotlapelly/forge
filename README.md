@@ -133,12 +133,13 @@ shared pieces are promoted into `core/` — no rewrite.
 | 4 | Orchestration (LangGraph decision graph) | done |
 | 5 | State (SQLite checkpointer + store) | done |
 | 6 | Observability (Phoenix tracing) | done |
-| 7 | Action (MCP tools + approval gates + PR flow) | in progress — tools + approval gate done, `open_pr` pending |
+| 7 | Action (MCP tools + approval gates + PR flow) | done |
 | 8 | Interface (Chainlit chat) | done |
 | 9 | Deployment (Docker packaging) | done |
 | 10 | Ingest source (structure-aware repo indexing) | done |
 | 11 | Code-edit tool (dedicated code_model + gated write_file) | done |
 | 12 | Commit/push tools (gated, sandboxed git identity) | done |
+| 13 | `open_pr` tool (GitHub REST API, PR-review gate) | done |
 
 We build one phase per step, each testable on its own before the next.
 
@@ -160,8 +161,18 @@ Phase 12 adds `commit`/`push` to the same local MCP server, both gated the
 same way `write_file` already was — `commit`/`push` were in
 `forge.require_approval_for` since Phase 1, just unimplemented until now.
 Both operate on `.data/workspace/`'s own git repo (a local-only identity, no
-`--global` config touched). `open_pr` is the one entry in that list still
-pending.
+`--global` config touched).
+
+Phase 13 adds `open_pr`, the one entry in that list left unbuilt since Phase
+1. Unlike `commit`/`push` it isn't an MCP tool: `adapters/github_pr.py`
+implements `core.tools.Tool` directly, prints the full diff plus the PR
+title/body to the human, then calls the GitHub REST API
+(`POST /repos/{owner}/{repo}/pulls`) with a `GITHUB_TOKEN` read once by
+`app/config_loader.py` — the only place that ever touches the raw value.
+Same approval gate as everything else in `forge.require_approval_for`, so a
+denied `open_pr` never reaches the network (proven in
+`app/open_pr_smoke_test.py` against a real local HTTP server, not just
+reasoned about).
 
 See [WORKFLOW.md](WORKFLOW.md) for the full architecture walkthrough
 (Java/Spring analogies, end-to-end request flows, diagrams) and

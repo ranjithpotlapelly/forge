@@ -79,7 +79,7 @@ def main() -> int:
     except RuntimeError as e:
         print(f"[ok] sandbox rejected a path escape: {e}")
 
-    print("\nPhase 7 (tools + approval gate) OK. PR flow (commit/push/open_pr) not yet wired.")
+    print("\nPhase 7 (tools + approval gate) OK. PR flow (commit/push/open_pr) fully wired.")
     return 0
 
 if __name__ == "__main__":
