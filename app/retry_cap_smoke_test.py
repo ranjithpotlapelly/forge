@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from app.config_loader import load_config
 from app.wiring import build_engine, build_ingest, build_retriever
+from product.approval import PlanDecision
 from product.indexing import index_repo
 
 TEST_REPO = r"C:\Users\Ranjith\AI-Space\forge-test-repo-failing"
@@ -27,8 +28,8 @@ def main() -> int:
 
     ingest = build_ingest(cfg)
     retriever = build_retriever(cfg)
-    indexed = index_repo(ingest, retriever)
-    print(f"[ok] indexed {indexed} chunk(s) from the throwaway (always-failing-tests) repo")
+    stats = index_repo(ingest, retriever)
+    print(f"[ok] indexed {stats['symbols']} chunk(s) across {stats['files']} file(s) from the throwaway (always-failing-tests) repo")
 
     cfg["engine"]["checkpoint_path"] = None
     engine = build_engine(cfg, retriever=retriever)
@@ -37,7 +38,7 @@ def main() -> int:
     result = engine.run_task(
         "Add a null check at the start of greet that raises ValueError if name is None",
         thread_id="retry-cap-smoke",
-        approve=lambda plan: True,
+        approve=lambda plan: PlanDecision("approve"),
     )
 
     if result.get("approved") is not True:

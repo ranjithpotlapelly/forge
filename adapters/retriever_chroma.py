@@ -4,21 +4,13 @@ Embeddings are computed through Ollama (same server as the LLM, different
 model) so this adapter has no vendor coupling beyond chromadb + ollama.
 """
 from __future__ import annotations
-import hashlib
 import chromadb
 import ollama
 from opentelemetry import trace
+from adapters._doc_id import document_id
 from core.types import Document, Chunk
 
 _tracer = trace.get_tracer(__name__)
-
-def _doc_id(doc: Document) -> str:
-    meta = doc.metadata
-    if "path" in meta:
-        key = f"{meta['path']}:{meta.get('start_line', '')}:{meta.get('symbol', '')}"
-    else:
-        key = doc.content
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 class ChromaRetriever:
     def __init__(self, path: str, collection: str, embed_model: str, host: str, **opts):
@@ -40,7 +32,7 @@ class ChromaRetriever:
         with _tracer.start_as_current_span("retriever.add") as span:
             span.set_attribute("retriever.collection", self.collection)
             span.set_attribute("retriever.doc_count", len(documents))
-            ids = [_doc_id(d) for d in documents]
+            ids = [document_id(d) for d in documents]
             contents = [d.content for d in documents]
             metadatas = [d.metadata or {"_empty": True} for d in documents]
             embeddings = self._embed(contents)

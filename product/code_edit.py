@@ -15,7 +15,7 @@ from __future__ import annotations
 import ast
 import difflib
 import re
-from typing import Any
+from typing import Any, Callable
 from core.llm import LLMClient
 from core.retriever import Retriever
 from core.tools import Tool
@@ -118,6 +118,7 @@ def apply_plan(
     backups: dict[str, str] | None = None,
     attempt: int = 1,
     test_feedback: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> dict:
     """Apply an already-approved ProposedPR to the workspace, one step at a
     time.
@@ -149,13 +150,16 @@ def apply_plan(
     results: list[dict] = []
     diff_parts: list[str] = []
     this_call_backups: set[str] = set()
+    notify = on_progress or (lambda *_: None)
+    total_steps = len(plan.steps)
 
     def _rollback_this_call() -> None:
         for path in this_call_backups:
             run_tool(write_tool, {"path": path, "content": backups[path]}, approve=lambda *_: True)
 
     try:
-        for step in plan.steps:
+        for i, step in enumerate(plan.steps, start=1):
+            notify(f"Editing file {i}/{total_steps} (attempt {attempt}/3): {step.target_path}")
             if step.kind == "delete":
                 results.append({"target_path": step.target_path, "kind": step.kind, "status": "unsupported", "detail": "no delete tool yet"})
                 continue
@@ -219,6 +223,20 @@ def commit_changes(commit_tool: Tool, title: str, body: str) -> str:
     separate human decision point."""
     message = f"{title}\n\n{body}" if body else title
     return run_tool(commit_tool, {"message": message}, approve=lambda *_: True)
+
+def push_changes(push_tool: Tool, branch: str) -> str:
+    """Push the workspace branch after a successful commit. Same rationale as
+    commit_changes: the plan (which this push is part of executing) was
+    already approved; not a second decision point of its own."""
+    return run_tool(push_tool, {"remote": "origin", "branch": branch}, approve=lambda *_: True)
+
+def open_pr_changes(open_pr_tool: Tool, title: str, body: str, base: str, head: str) -> str:
+    """Open the PR. Unlike commit/push above, opening a PR *does* get its own
+    separate human decision (Phase 17: pr_approval_gate_node, gated by a
+    PlanApprove-style callback the graph calls before this function is ever
+    reached) — by the time this runs that decision is already made, so this
+    goes through run_tool the same always-approve way, for the same reason."""
+    return run_tool(open_pr_tool, {"title": title, "body": body, "base": base, "head": head}, approve=lambda *_: True)
 
 def rollback_files(write_tool: Tool, backups: dict[str, str]) -> list[str]:
     """Restore every backed-up file to its pre-edit content. Used when the

@@ -73,7 +73,10 @@ def _parse_plan(raw: str, known_paths: set[str]) -> ProposedPR:
 
     return ProposedPR(title=data["title"], body=data["body"], branch=data["branch"], steps=steps)
 
-def _build_messages(task: str, files: list[Chunk], known_paths: set[str], error: str | None = None) -> list[Message]:
+def _build_messages(
+    task: str, files: list[Chunk], known_paths: set[str],
+    error: str | None = None, feedback: str | None = None,
+) -> list[Message]:
     system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
     file_sections = "\n\n".join(
         f"--- {f.metadata.get('path', '?')} ---\n{f.content}" for f in files
@@ -86,6 +89,12 @@ def _build_messages(task: str, files: list[Chunk], known_paths: set[str], error:
         f"directory prefixes):\n{paths_list}\n\n"
         f"Relevant files:\n{file_sections}"
     )
+    if feedback:
+        user_content += (
+            f"\n\nA human reviewed a previous version of this plan and asked "
+            f"for changes before it can be approved: {feedback}\n"
+            "Produce a revised plan that addresses this."
+        )
     if error:
         user_content += (
             f"\n\nYour previous response was invalid: {error}\n"
@@ -96,16 +105,22 @@ def _build_messages(task: str, files: list[Chunk], known_paths: set[str], error:
         Message(role="user", content=user_content),
     ]
 
-def make_plan(llm: LLMClient, task: str, files: list[Chunk]) -> ProposedPR:
+def make_plan(llm: LLMClient, task: str, files: list[Chunk], feedback: str | None = None) -> ProposedPR:
     """Ask the LLM for a plan; retry once with the parse/validation error
-    appended if the first response doesn't parse, then give up clearly."""
+    appended if the first response doesn't parse, then give up clearly.
+
+    feedback carries a human's requested correction from a previous round
+    (Chainlit's "Edit" action, or any other PlanApprove implementation) --
+    plumbed into every retry's prompt too, so a parse-retry doesn't silently
+    drop the revision the human actually asked for.
+    """
     known_paths = {f.metadata.get("path") for f in files if f.metadata.get("path")}
-    messages = _build_messages(task, files, known_paths)
+    messages = _build_messages(task, files, known_paths, feedback=feedback)
     raw = llm.generate(messages, format="json")
     try:
         return _parse_plan(raw, known_paths)
     except PlanValidationError as first_error:
-        retry_messages = _build_messages(task, files, known_paths, error=str(first_error))
+        retry_messages = _build_messages(task, files, known_paths, error=str(first_error), feedback=feedback)
         raw = llm.generate(retry_messages, format="json")
         try:
             return _parse_plan(raw, known_paths)

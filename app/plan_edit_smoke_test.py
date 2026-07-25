@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from app.config_loader import load_config
 from app.wiring import build_engine, build_ingest, build_retriever
+from product.approval import PlanDecision
 from product.indexing import index_repo
 
 TEST_REPO = r"C:\Users\Ranjith\AI-Space\forge-test-repo"
@@ -26,17 +27,21 @@ def main() -> int:
 
     ingest = build_ingest(cfg)
     retriever = build_retriever(cfg)
-    indexed = index_repo(ingest, retriever)
-    print(f"[ok] indexed {indexed} chunk(s) from the throwaway test repo")
+    stats = index_repo(ingest, retriever)
+    print(f"[ok] indexed {stats['symbols']} chunk(s) across {stats['files']} file(s) from the throwaway test repo")
 
     cfg["engine"]["checkpoint_path"] = None
     engine = build_engine(cfg, retriever=retriever)
     workspace = Path(cfg["tools"]["workspace"]).resolve()
 
+    # approve_pr defaults to "reject" (engine.py's safe default), so this run
+    # commits and pushes (Phase 17: both auto-approved, part of executing an
+    # already-approved plan) but stops at the PR gate -- opening a PR is its
+    # own separate decision, out of scope for this smoke test.
     result = engine.run_task(
         "Add a null check at the start of greet that raises ValueError if name is None",
         thread_id="plan-edit-smoke",
-        approve=lambda plan: True,
+        approve=lambda plan: PlanDecision("approve"),
     )
 
     if result.get("approved") is not True:
@@ -83,7 +88,26 @@ def main() -> int:
         return 1
     print(f"[ok] commit_result: {commit_result}")
 
-    print("\nPhase 14 (edit node) OK. Splice-based edit applied, backed up, diffed, parses, and committed.")
+    # Phase 17: commit -> push happens automatically (same "already-approved,
+    # just executing" rationale as commit itself); prepare_workspace's clone
+    # of TEST_REPO set 'origin' to TEST_REPO itself, so this is a real push.
+    push_result = result.get("push_result")
+    if not push_result or push_result.get("status") != "ok":
+        print(f"[!!] expected a successful push_result, got {push_result!r}")
+        return 1
+    print(f"[ok] push_result: {push_result}")
+
+    # approve_pr wasn't supplied -> defaults to reject -> stops at the PR
+    # gate without ever calling open_pr (opening a PR is its own decision).
+    if result.get("pr_approved") is not False:
+        print(f"[!!] expected pr_approved=False (no approve_pr given), got {result.get('pr_approved')!r}")
+        return 1
+    if "pr_result" in result:
+        print(f"[!!] open_pr should never have run, got pr_result={result['pr_result']!r}")
+        return 1
+    print("[ok] pr_approved=False, open_pr never ran (no approve_pr callback given)")
+
+    print("\nPhase 14 (edit node) OK. Splice-based edit applied, backed up, diffed, parses, committed, and pushed.")
     return 0
 
 if __name__ == "__main__":

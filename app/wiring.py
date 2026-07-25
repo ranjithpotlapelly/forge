@@ -31,22 +31,24 @@ def build_code_model(cfg: dict) -> LLMClient:
 def build_retriever(cfg: dict) -> Retriever:
     section = cfg["retriever"]
     adapter = section["adapter"]
-    if adapter == "chroma":
-        from adapters.retriever_chroma import ChromaRetriever
-        return ChromaRetriever(
-            path=section["path"],
-            collection=section["collection"],
-            embed_model=cfg["embeddings"]["model"],
-            host=cfg["embeddings"].get("host", cfg["llm"]["host"]),
-        )
-    raise ValueError(f"Unknown retriever adapter: {adapter}")
+    if adapter != "chroma":
+        raise ValueError(f"Unknown retriever adapter: {adapter}")
+    from adapters.retriever_chroma import ChromaRetriever
+    from adapters.retriever_hybrid import HybridRetriever
+    semantic = ChromaRetriever(
+        path=section["path"],
+        collection=section["collection"],
+        embed_model=cfg["embeddings"]["model"],
+        host=cfg["embeddings"].get("host", cfg["llm"]["host"]),
+    )
+    return HybridRetriever(semantic=semantic, lexical_path=section.get("lexical_path", "./.data/lexical.db"))
 
 def build_engine(cfg: dict, llm: LLMClient | None = None, retriever: Retriever | None = None) -> Engine:
     section = cfg["engine"]
     adapter = section["adapter"]
     if adapter == "langgraph":
         from adapters.engine_langgraph import LangGraphEngine
-        from product.code_edit import apply_plan, commit_changes, rollback_files
+        from product.code_edit import apply_plan, commit_changes, open_pr_changes, push_changes, rollback_files
         from product.planning import make_plan
         tools = {t.name: t for t in build_tools(cfg)}
         return LangGraphEngine(
@@ -60,9 +62,13 @@ def build_engine(cfg: dict, llm: LLMClient | None = None, retriever: Retriever |
             prepare_tool=tools.get("prepare_workspace"),
             run_tests_tool=tools.get("run_tests"),
             commit_tool=tools.get("commit"),
+            push_tool=tools.get("push"),
+            open_pr_tool=tools.get("open_pr"),
             plan_fn=make_plan,
             apply_plan_fn=apply_plan,
             commit_fn=commit_changes,
+            push_fn=push_changes,
+            open_pr_fn=open_pr_changes,
             rollback_fn=rollback_files,
             repo_path=cfg["forge"]["repo_path"],
             workspace=cfg["tools"]["workspace"],
@@ -102,6 +108,7 @@ def build_tools(cfg: dict) -> list[Tool]:
         require_approval_for=require_approval_for,
     )
     tools.append(build_open_pr_tool(cfg, require_approval_for))
+    tools.append(build_fetch_issue_tool(cfg))
     return tools
 
 def build_open_pr_tool(cfg: dict, require_approval_for: set[str] | None = None) -> Tool:
@@ -114,10 +121,20 @@ def build_open_pr_tool(cfg: dict, require_approval_for: set[str] | None = None) 
         requires_approval="open_pr" in require_approval_for,
     )
 
-def build_ingest(cfg: dict) -> IngestSource:
+def build_fetch_issue_tool(cfg: dict) -> Tool:
+    from adapters.github_issue import FetchIssueTool
+    return FetchIssueTool(
+        repo=cfg["github"]["repo"],
+        token=cfg["github"]["token"],
+        api_base=cfg["github"].get("api_base", "https://api.github.com"),
+    )
+
+def build_ingest(cfg: dict, repo_path: str | None = None) -> IngestSource:
+    """repo_path overrides forge.repo_path -- used by the /index command and
+    app/index.py to index an arbitrary repo without touching config.yaml."""
     section = cfg["ingest"]
     adapter = section["adapter"]
     if adapter == "fs":
         from adapters.ingest_fs import FsIngestSource
-        return FsIngestSource(repo_path=cfg["forge"]["repo_path"], languages=cfg["forge"]["languages"])
+        return FsIngestSource(repo_path=repo_path or cfg["forge"]["repo_path"], languages=cfg["forge"]["languages"])
     raise ValueError(f"Unknown ingest adapter: {adapter}")

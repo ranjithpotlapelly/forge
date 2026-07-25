@@ -239,6 +239,11 @@ the next began.
 | 11 | Code-edit tool (dedicated `code_model` + gated `write_file`) | done |
 | 12 | Commit/push tools (gated, sandboxed workspace) | done |
 | 13 | `open_pr` tool (direct GitHub REST API adapter, same approval gate) | done |
+| 14 | Task path (plan → approve → edit → test → retry ≤3 → commit, LangGraph) | done |
+| 15 | Hybrid retriever (SQLite FTS5 lexical index + semantic, RRF fusion) | done |
+| 16 | Chainlit Q&A: streaming answers, expandable citations, `/index` | done |
+| 17 | Chainlit task-flow UI: plan card, Approve/Edit/Reject buttons, PR gate | done |
+| 18 | `fetch_issue` tool (read-only GitHub issue fetch, `#N` detection in chat) | done |
 
 ## 8. Upgrade path
 
@@ -394,23 +399,21 @@ any errors.
 
 In priority order:
 
-1. **Wire the approval gate into the Chainlit UI.** Approval only exists as
-   a Python callback in test code today. Even a minimal
-   `cl.AskActionMessage` (Approve/Deny buttons) wired to `run_tool` would
-   close this.
-2. **Move the approval gate onto LangGraph's `interrupt()`.** Today a denied
-   approval just raises — nothing is checkpointed mid-approval, so "resume a
-   paused task later" isn't possible yet, even though the checkpointer
-   needed for it already exists (Phase 5).
-3. **Remove or use `product/schema.py`'s `ProposedPR`/`PlanStep`.** Defined,
-   never imported anywhere — dead code that implies a planning step which
-   doesn't exist.
-4. **Add a test-runner tool with a retry loop.** `code_edit.py` writes a
-   file and stops; there's no run-tests-and-retry-on-failure step.
-5. **Consider a lexical/keyword pre-filter for retrieval.** Semantic-only
-   today; fine at this repo's size, worth revisiting at scale.
-6. **Enforce a context-token budget explicitly** before calling
+1. **Move the approval gate onto LangGraph's `interrupt()`.** Today a denied
+   approval just raises, and a pending approval only survives as long as the
+   Chainlit session driving it (`_ask_plan_decision`/`_ask_pr_decision`
+   block a background thread on `AskActionMessage`) — "close the tab, resume
+   the same paused task tomorrow" isn't possible yet, even though the
+   checkpointer needed for it already exists (Phase 5) and every task-graph
+   node is checkpointed today.
+2. **Enforce a context-token budget explicitly** before calling
    `llm.generate()` — nothing currently checks this.
-7. **Keep `WORKFLOW.md` current, not a PDF.** Update Section 7's status
+3. **Keep `WORKFLOW.md` current, not a PDF.** Update Section 7's status
    table the same way `README.md`'s roadmap table gets updated, one phase at
    a time.
+
+Resolved since these were last written: the Chainlit approval gate (Phase
+17, `cl.AskActionMessage` Approve/Edit/Reject), `ProposedPR`/`PlanStep` (now
+constructed by `product/planning.py` and rendered as the plan card), the
+edit/test retry loop (Phase 14, capped at 3 attempts), and a lexical
+pre-filter for retrieval (Phase 15, SQLite FTS5 + RRF fusion).

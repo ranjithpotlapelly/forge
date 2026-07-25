@@ -140,6 +140,11 @@ shared pieces are promoted into `core/` — no rewrite.
 | 11 | Code-edit tool (dedicated code_model + gated write_file) | done |
 | 12 | Commit/push tools (gated, sandboxed git identity) | done |
 | 13 | `open_pr` tool (GitHub REST API, PR-review gate) | done |
+| 14 | Task path (plan → approve → edit → test → retry ≤3 → commit) | done |
+| 15 | Hybrid retriever (SQLite FTS5 lexical + semantic, RRF fusion) | done |
+| 16 | Chainlit Q&A: streaming answers, expandable citations, `/index` | done |
+| 17 | Chainlit task-flow UI: plan card, Approve/Edit/Reject, PR gate | done |
+| 18 | `fetch_issue` tool (read-only GitHub issue fetch, `#N` detection in chat) | done |
 
 We build one phase per step, each testable on its own before the next.
 

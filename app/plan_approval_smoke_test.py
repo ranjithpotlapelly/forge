@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from app.config_loader import load_config
 from app.wiring import build_engine, build_ingest, build_retriever
+from product.approval import PlanDecision
 from product.indexing import index_repo
 
 TEST_REPO = r"C:\Users\Ranjith\AI-Space\forge-test-repo"
@@ -35,8 +36,8 @@ def main() -> int:
 
     ingest = build_ingest(cfg)
     retriever = build_retriever(cfg)
-    indexed = index_repo(ingest, retriever)
-    print(f"[ok] indexed {indexed} chunk(s) from the throwaway test repo into a separate collection")
+    stats = index_repo(ingest, retriever)
+    print(f"[ok] indexed {stats['symbols']} chunk(s) across {stats['files']} file(s) from the throwaway test repo into a separate collection")
 
     cfg["engine"]["checkpoint_path"] = None  # skip checkpointing for this test — irrelevant to what's being proven
     engine = build_engine(cfg, retriever=retriever)
@@ -46,7 +47,7 @@ def main() -> int:
     result = engine.run_task(
         "Add a docstring to the greet function in math_utils.py",
         thread_id="plan-reject-smoke",
-        approve=lambda plan: (approve_calls.append(plan), False)[1],
+        approve=lambda plan: (approve_calls.append(plan), PlanDecision("reject"))[1],
     )
 
     if not approve_calls:
@@ -76,7 +77,7 @@ def main() -> int:
     engine.run_task(
         "Add a docstring to the greet function in math_utils.py",
         thread_id="plan-reject-smoke-2",
-        approve=lambda plan: False,
+        approve=lambda plan: PlanDecision("reject"),
     )
     snapshot_after_second_reject = _snapshot(workspace)
 

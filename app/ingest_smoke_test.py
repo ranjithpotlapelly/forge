@@ -29,8 +29,8 @@ def main() -> int:
           f"(lines {sample.metadata['start_line']}-{sample.metadata['end_line']})")
 
     retriever = build_retriever(cfg)
-    indexed = index_repo(ingest, retriever)
-    print(f"[ok] index_repo() -> indexed {indexed} chunk(s)")
+    stats = index_repo(ingest, retriever)
+    print(f"[ok] index_repo() -> indexed {stats['symbols']} chunk(s) across {stats['files']} file(s)")
 
     checks = [
         ("how does the human approval gate for a tool call work?", "product/approval.py"),

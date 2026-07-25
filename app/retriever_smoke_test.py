@@ -13,7 +13,7 @@ from core.types import Document
 def main() -> int:
     cfg = load_config()
     retriever = build_retriever(cfg)
-    print(f"[ok] wired {type(retriever).__name__} (path={retriever.path}, collection={retriever.collection})")
+    print(f"[ok] wired {type(retriever).__name__}")
 
     docs = [
         Document(content="def add(a, b):\n    return a + b", metadata={"path": "math_utils.py", "symbol": "add", "start_line": 1}),

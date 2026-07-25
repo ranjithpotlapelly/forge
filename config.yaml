@@ -26,10 +26,13 @@ embeddings:
   model: nomic-embed-text      # light + fast on CPU
 
 retriever:
-  adapter: chroma              # -> adapters/retriever_chroma.py (embedded, no server)
+  adapter: chroma              # -> adapters/retriever_chroma.py (semantic half, embedded, no server)
   path: ./.data/chroma
   collection: forge_code
   top_k: 8
+  # Phase 15: fused in behind the same Retriever port by adapters/retriever_hybrid.py
+  # -> adapters/retriever_fts.py (SQLite FTS5 over symbol/signature/path, for exact-identifier queries)
+  lexical_path: ./.data/lexical.db
 
 # --- Orchestration (Phase 4) ---
 engine:
@@ -59,10 +62,11 @@ tools:
 ingest:
   adapter: fs                  # -> adapters/ingest_fs.py (ast-based chunking for .py, whole-file fallback otherwise)
 
-# --- GitHub (Phase 13): open_pr tool -> adapters/github_pr.py ---
+# --- GitHub (Phase 13/18): open_pr -> adapters/github_pr.py, fetch_issue -> adapters/github_issue.py ---
 github:
   token: ${GITHUB_TOKEN}        # from .env; never hardcode, never logged
   api_base: https://api.github.com
+  repo: ranjithpotlapelly/forge  # owner/name fetch_issue reads issues from -- never hardcoded in the adapter
 
 # --- Forge product settings ---
 forge:
