@@ -145,6 +145,7 @@ shared pieces are promoted into `core/` — no rewrite.
 | 16 | Chainlit Q&A: streaming answers, expandable citations, `/index` | done |
 | 17 | Chainlit task-flow UI: plan card, Approve/Edit/Reject, PR gate | done |
 | 18 | `fetch_issue` tool (read-only GitHub issue fetch, `#N` detection in chat) | done |
+| 19 | Run history (`runs`/`run_steps` tables, `core.run_history.RunHistory`, `python -m app.history`) | done |
 
 We build one phase per step, each testable on its own before the next.
 

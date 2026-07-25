@@ -28,6 +28,7 @@ Run with:  chainlit run app/chainlit_app.py -w
 """
 from __future__ import annotations
 import asyncio
+import json
 import re
 import threading
 import time
@@ -39,7 +40,10 @@ import chainlit as cl
 from adapters.engine_langgraph import build_answer_messages, classify_intent, decline, has_context
 from app.config_loader import load_config
 from app.index import run_index
-from app.wiring import build_engine, build_fetch_issue_tool, build_llm, build_retriever, build_store, build_tracing
+from app.wiring import (
+    build_engine, build_fetch_issue_tool, build_llm, build_retriever,
+    build_run_history, build_store, build_tracing,
+)
 from core.types import Chunk
 from product.approval import PlanDecision
 from product.citations import read_lines
@@ -50,6 +54,7 @@ _tracing.start()
 _llm = build_llm(_cfg)
 _retriever = build_retriever(_cfg)
 _store = build_store(_cfg)
+_run_history = build_run_history(_cfg)
 _engine = build_engine(_cfg, llm=_llm, retriever=_retriever)
 _fetch_issue_tool = build_fetch_issue_tool(_cfg)
 _repo_path = _cfg["forge"]["repo_path"]
@@ -137,13 +142,23 @@ async def _stream_tokens(tokens: Iterable[str], msg: cl.Message) -> str:
     return "".join(parts)
 
 async def _handle_question(question: str, thread_id: str) -> None:
+    # This path bypasses LangGraphEngine.ask() by design (Phase 16 -- see
+    # module docstring), so it never gets the automatic per-node run_history
+    # recording adapters/engine_langgraph.py's _instrumented() gives every
+    # graph node. Recorded explicitly here instead, using the same node
+    # names (retrieve/decline/answer) the graph would use for the same steps.
+    run_id = _run_history.start_run(thread_id, "qa", question)
+    t0 = time.monotonic()
     async with cl.Step(name="Retrieving...", type="retrieval") as step:
         step.input = question
         chunks = await asyncio.to_thread(_retriever.search, question, _top_k)
         step.output = f"{len(chunks)} chunk(s) found"
+    _run_history.record_step(run_id, "retrieve", "ok", json.dumps({"chunks": len(chunks)}), (time.monotonic() - t0) * 1000)
 
     if has_context({"chunks": chunks}) != "answer":
         canned = decline({})["answer"]
+        _run_history.record_step(run_id, "decline", "ok", None, None)
+        _run_history.finish_run(run_id, "completed")
         _store.put(
             f"chat:{thread_id}:{int(time.time() * 1000)}",
             {"question": question, "answer": canned.text, "citations": 0},
@@ -153,12 +168,17 @@ async def _handle_question(question: str, thread_id: str) -> None:
 
     messages = build_answer_messages(question, chunks)
     msg = cl.Message(content="", elements=_citation_elements(chunks))
+    t1 = time.monotonic()
     try:
         full_text = await _stream_tokens(_llm.stream(messages), msg)
     except Exception as e:  # noqa: BLE001 -- surfaced to the user, not a silent truncation
+        _run_history.record_step(run_id, "answer", "error", str(e), (time.monotonic() - t1) * 1000)
+        _run_history.finish_run(run_id, "failed", str(e))
         await cl.Message(content=f"Something went wrong while generating the answer: {e}").send()
         return
     await msg.send()
+    _run_history.record_step(run_id, "answer", "ok", json.dumps({"citations": len(chunks)}), (time.monotonic() - t1) * 1000)
+    _run_history.finish_run(run_id, "completed")
 
     _store.put(
         f"chat:{thread_id}:{int(time.time() * 1000)}",

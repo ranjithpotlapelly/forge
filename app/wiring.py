@@ -8,6 +8,7 @@ from core.ingest import IngestSource
 from core.llm import LLMClient
 from core.observability import Tracing
 from core.retriever import Retriever
+from core.run_history import RunHistory
 from core.store import StateStore
 from core.tools import Tool
 
@@ -72,6 +73,7 @@ def build_engine(cfg: dict, llm: LLMClient | None = None, retriever: Retriever |
             rollback_fn=rollback_files,
             repo_path=cfg["forge"]["repo_path"],
             workspace=cfg["tools"]["workspace"],
+            run_history=build_run_history(cfg),
         )
     raise ValueError(f"Unknown engine adapter: {adapter}")
 
@@ -81,6 +83,18 @@ def build_store(cfg: dict) -> StateStore:
     if adapter == "sqlite":
         from adapters.store_sqlite import SqliteStore
         return SqliteStore(path=section["path"])
+    raise ValueError(f"Unknown store adapter: {adapter}")
+
+def build_run_history(cfg: dict) -> RunHistory:
+    """Phase 19: a narrow second port alongside StateStore, not a widening of
+    it -- both happen to persist to the same .data/forge.db file (cfg["store"]),
+    but runs/run_steps are a distinct concern (an audit trail) from the
+    generic product key-value data StateStore holds."""
+    section = cfg["store"]
+    adapter = section["adapter"]
+    if adapter == "sqlite":
+        from adapters.run_history_sqlite import SqliteRunHistory
+        return SqliteRunHistory(path=section["path"])
     raise ValueError(f"Unknown store adapter: {adapter}")
 
 def build_tracing(cfg: dict) -> Tracing:

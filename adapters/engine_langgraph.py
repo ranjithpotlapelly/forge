@@ -23,11 +23,22 @@ duck-typed like product.approval.PlanDecision (a `.decision` /
 the dataclass itself, so its own fallback default (used when a caller passes
 no approve callback at all) is a plain types.SimpleNamespace with the same
 two attributes, not a real PlanDecision.
+
+Phase 19 instruments every node in _build() with _instrumented(), which
+records a core.run_history.RunHistory step around each one (thread_id/run_id
+live in config["configurable"], same channel as approve/on_progress above).
+approval_gate and pr_gate get a richer detail payload (_step_detail) --
+what was proposed and what the human decided -- since that's the audit
+trail the run history exists for; every other node gets a generic
+ok/error record. RunHistory is a plain core/ port, so importing it here
+doesn't touch the product/ rule above.
 """
 from __future__ import annotations
+import inspect
 import json
 import re
 import sqlite3
+import time
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +50,7 @@ from langgraph.types import RunnableConfig
 from opentelemetry import trace
 from core.llm import LLMClient
 from core.retriever import Retriever
+from core.run_history import RunHistory
 from core.tools import Tool
 from core.types import Answer, Chunk, Message
 
@@ -51,6 +63,58 @@ def _emit(config: RunnableConfig, text: str) -> None:
     configurable (CLI/test callers rarely supply one), so this never raises
     just because nobody's listening."""
     config["configurable"].get("on_progress", lambda *_: None)(text)
+
+# --- run-history instrumentation (Phase 19) ---------------------------------
+
+def _step_detail(node_name: str, state: GraphState, result: GraphState) -> str | None:
+    """Richer, explicit audit detail for the two approval nodes -- what was
+    proposed and what the human chose -- vs. a generic per-node record for
+    everything else. Returns None to fall back to a plain status-only record."""
+    if node_name == "approval_gate":
+        plan, decision = state.get("plan"), result.get("plan_decision")
+        if plan is None or decision is None:
+            return None
+        return json.dumps({
+            "proposed": {
+                "title": plan.title, "branch": plan.branch,
+                "steps": [{"kind": s.kind, "target_path": s.target_path, "description": s.description} for s in plan.steps],
+            },
+            "decision": decision,
+            "feedback": result.get("plan_feedback"),
+        })
+    if node_name == "pr_gate":
+        plan, approved = state.get("plan"), result.get("pr_approved")
+        if plan is None or approved is None:
+            return None
+        return json.dumps({
+            "proposed": {"title": plan.title, "body": plan.body, "diff_chars": len(state.get("edit_diff") or "")},
+            "decision": "approve" if approved else "reject",
+        })
+    return None
+
+def _instrumented(node_name: str, fn: Callable[..., GraphState]) -> Callable[..., GraphState]:
+    """Wraps a node so every execution is recorded as a run_step, regardless
+    of whether the underlying node function itself accepts `config` -- this
+    wrapper always does, so LangGraph always injects it here, and calls the
+    wrapped fn either way based on its own signature."""
+    accepts_config = "config" in inspect.signature(fn).parameters
+
+    def wrapped(state: GraphState, config: RunnableConfig) -> GraphState:
+        run_history: RunHistory | None = config["configurable"].get("run_history")
+        run_id = config["configurable"].get("run_id")
+        start = time.monotonic()
+        try:
+            result = fn(state, config=config) if accepts_config else fn(state)
+        except Exception as e:
+            if run_history and run_id:
+                run_history.record_step(run_id, node_name, "error", str(e), (time.monotonic() - start) * 1000)
+            raise
+        if run_history and run_id:
+            detail = _step_detail(node_name, state, result)
+            run_history.record_step(run_id, node_name, "ok", detail, (time.monotonic() - start) * 1000)
+        return result
+
+    return wrapped
 
 # --- intent classification -------------------------------------------------
 # Two fast, no-model-call heuristics cover the common cases in both
@@ -396,6 +460,7 @@ class LangGraphEngine:
         rollback_fn: Callable[..., Any] | None = None,
         repo_path: str = ".",
         workspace: str | Path = "./.data/workspace",
+        run_history: RunHistory | None = None,
     ):
         self.llm, self.retriever, self.k = llm, retriever, k
         self.code_model = code_model
@@ -406,6 +471,7 @@ class LangGraphEngine:
         self.commit_fn, self.push_fn, self.open_pr_fn = commit_fn, push_fn, open_pr_fn
         self.rollback_fn = rollback_fn
         self.repo_path = repo_path
+        self.run_history = run_history
         self.workspace = Path(workspace).resolve()
         self._checkpointer = self._build_checkpointer(checkpoint_path)
         self._graph = self._build()
@@ -429,33 +495,33 @@ class LangGraphEngine:
 
     def _build(self):
         g = StateGraph(GraphState)
-        g.add_node("classify_intent", partial(classify_intent, llm=self.llm))
-        g.add_node("retrieve", partial(retrieve, retriever=self.retriever, k=self.k))
-        g.add_node("answer", partial(answer, llm=self.llm))
-        g.add_node("decline", decline)
-        g.add_node("prepare_workspace", partial(
+        g.add_node("classify_intent", _instrumented("classify_intent", partial(classify_intent, llm=self.llm)))
+        g.add_node("retrieve", _instrumented("retrieve", partial(retrieve, retriever=self.retriever, k=self.k)))
+        g.add_node("answer", _instrumented("answer", partial(answer, llm=self.llm)))
+        g.add_node("decline", _instrumented("decline", decline))
+        g.add_node("prepare_workspace", _instrumented("prepare_workspace", partial(
             prepare_workspace_node, retriever=self.retriever,
             repo_path=self.repo_path, prepare_tool=self.prepare_tool,
-        ))
-        g.add_node("task_retrieve", partial(
+        )))
+        g.add_node("task_retrieve", _instrumented("task_retrieve", partial(
             task_retrieve, retriever=self.retriever, workspace=self.workspace, k=self.k,
-        ))
-        g.add_node("plan", partial(plan_node, plan_fn=self.plan_fn, llm=self.llm))
-        g.add_node("approval_gate", approval_gate_node)
-        g.add_node("rejected", rejected_node)
-        g.add_node("edit", partial(
+        )))
+        g.add_node("plan", _instrumented("plan", partial(plan_node, plan_fn=self.plan_fn, llm=self.llm)))
+        g.add_node("approval_gate", _instrumented("approval_gate", approval_gate_node))
+        g.add_node("rejected", _instrumented("rejected", rejected_node))
+        g.add_node("edit", _instrumented("edit", partial(
             edit_node, apply_plan_fn=self.apply_plan_fn, code_model=self.code_model,
             retriever=self.retriever, read_tool=self.read_tool, write_tool=self.write_tool,
-        ))
-        g.add_node("test", partial(test_node, run_tests_tool=self.run_tests_tool))
-        g.add_node("bump_attempt", bump_attempt_node)
-        g.add_node("commit", partial(commit_node, commit_fn=self.commit_fn, commit_tool=self.commit_tool))
-        g.add_node("push", partial(push_node, push_fn=self.push_fn, push_tool=self.push_tool))
-        g.add_node("push_failed", push_failed_node)
-        g.add_node("pr_gate", pr_approval_gate_node)
-        g.add_node("pr_rejected", pr_rejected_node)
-        g.add_node("open_pr", partial(open_pr_node, open_pr_fn=self.open_pr_fn, open_pr_tool=self.open_pr_tool))
-        g.add_node("give_up", partial(give_up_node, rollback_fn=self.rollback_fn, write_tool=self.write_tool))
+        )))
+        g.add_node("test", _instrumented("test", partial(test_node, run_tests_tool=self.run_tests_tool)))
+        g.add_node("bump_attempt", _instrumented("bump_attempt", bump_attempt_node))
+        g.add_node("commit", _instrumented("commit", partial(commit_node, commit_fn=self.commit_fn, commit_tool=self.commit_tool)))
+        g.add_node("push", _instrumented("push", partial(push_node, push_fn=self.push_fn, push_tool=self.push_tool)))
+        g.add_node("push_failed", _instrumented("push_failed", push_failed_node))
+        g.add_node("pr_gate", _instrumented("pr_gate", pr_approval_gate_node))
+        g.add_node("pr_rejected", _instrumented("pr_rejected", pr_rejected_node))
+        g.add_node("open_pr", _instrumented("open_pr", partial(open_pr_node, open_pr_fn=self.open_pr_fn, open_pr_tool=self.open_pr_tool)))
+        g.add_node("give_up", _instrumented("give_up", partial(give_up_node, rollback_fn=self.rollback_fn, write_tool=self.write_tool)))
 
         g.set_entry_point("classify_intent")
         g.add_conditional_edges("classify_intent", route_intent, {"question": "retrieve", "task": "prepare_workspace"})
@@ -488,6 +554,7 @@ class LangGraphEngine:
         with _tracer.start_as_current_span("engine.ask") as span:
             span.set_attribute("engine.thread_id", thread_id)
             span.set_attribute("engine.question", question)
+            run_id = self.run_history.start_run(thread_id, "qa", question) if self.run_history else None
             config = {"configurable": {
                 "thread_id": thread_id,
                 # A plain question should never reach the task path's approval
@@ -496,8 +563,17 @@ class LangGraphEngine:
                 # approval_gate_node's decision.decision read if it somehow did.
                 "approve": lambda *_: SimpleNamespace(decision="reject", feedback=None),
                 "approve_pr": lambda *_: False,
+                "run_history": self.run_history,
+                "run_id": run_id,
             }}
-            result = self._graph.invoke({"question": question}, config=config)
+            try:
+                result = self._graph.invoke({"question": question}, config=config)
+            except Exception as e:
+                if self.run_history and run_id:
+                    self.run_history.finish_run(run_id, "failed", str(e))
+                raise
+            if self.run_history and run_id:
+                self.run_history.finish_run(run_id, "completed")
             answer_ = result["answer"]
             span.set_attribute("engine.answer.citation_count", len(answer_.citations))
             return answer_
@@ -519,13 +595,23 @@ class LangGraphEngine:
         with _tracer.start_as_current_span("engine.run_task") as span:
             span.set_attribute("engine.thread_id", thread_id)
             span.set_attribute("engine.task", task)
+            run_id = self.run_history.start_run(thread_id, "task", task) if self.run_history else None
             config = {"configurable": {
                 "thread_id": thread_id,
                 "approve": approve or (lambda *_: SimpleNamespace(decision="reject", feedback=None)),
                 "approve_pr": approve_pr or (lambda *_: False),
                 "on_progress": on_progress or (lambda *_: None),
+                "run_history": self.run_history,
+                "run_id": run_id,
             }}
-            result = self._graph.invoke({"question": task, "attempt": 1}, config=config)
+            try:
+                result = self._graph.invoke({"question": task, "attempt": 1}, config=config)
+            except Exception as e:
+                if self.run_history and run_id:
+                    self.run_history.finish_run(run_id, "failed", str(e))
+                raise
+            if self.run_history and run_id:
+                self.run_history.finish_run(run_id, "completed")
             span.set_attribute("engine.approved", bool(result.get("approved")))
             span.set_attribute("engine.attempts", result.get("attempt", 1))
             return result
