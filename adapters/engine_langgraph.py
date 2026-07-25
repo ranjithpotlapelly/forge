@@ -26,12 +26,29 @@ two attributes, not a real PlanDecision.
 
 Phase 19 instruments every node in _build() with _instrumented(), which
 records a core.run_history.RunHistory step around each one (thread_id/run_id
-live in config["configurable"], same channel as approve/on_progress above).
+live in config["configurable"], same channel as on_progress above).
 approval_gate and pr_gate get a richer detail payload (_step_detail) --
 what was proposed and what the human decided -- since that's the audit
 trail the run history exists for; every other node gets a generic
 ok/error record. RunHistory is a plain core/ port, so importing it here
 doesn't touch the product/ rule above.
+
+Phase 20 replaces the synchronous config["configurable"]["approve"]/
+["approve_pr"] callbacks approval_gate_node/pr_approval_gate_node used to
+read with langgraph.types.interrupt() calls. A callback that blocks a thread
+waiting on a human can't survive that thread's process dying; interrupt()
+instead checkpoints the run to .data/checkpoints.db and returns control
+immediately -- resuming (possibly in a different process entirely, see
+app/resume.py) is Command(resume=value) against the same thread_id, and
+LangGraph re-executes only the interrupted node, never anything upstream of
+it (verified empirically, not just assumed, before writing this).
+
+The payload passed to interrupt() must be a plain, checkpoint-safe dict (no
+ProposedPR objects, still no product/ import) -- LangGraphEngine._run_graph
+reconstructs a SimpleNamespace with the same shape from that dict before
+calling a caller's approve()/approve_pr(), so existing callers (Chainlit,
+every task-flow smoke test) that expect a plan object with .title/.branch/
+.steps[i].kind attributes keep working completely unchanged.
 """
 from __future__ import annotations
 import inspect
@@ -45,8 +62,9 @@ from types import SimpleNamespace
 from typing import Any, Callable, TypedDict
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import StateGraph, END
-from langgraph.types import RunnableConfig
+from langgraph.types import Command, RunnableConfig, interrupt
 from opentelemetry import trace
 from core.llm import LLMClient
 from core.retriever import Retriever
@@ -105,6 +123,12 @@ def _instrumented(node_name: str, fn: Callable[..., GraphState]) -> Callable[...
         start = time.monotonic()
         try:
             result = fn(state, config=config) if accepts_config else fn(state)
+        except GraphBubbleUp:
+            # interrupt() (or a cooperative drain) -- not a failure, just a
+            # pause. Nothing to record: this node hasn't actually finished,
+            # so there's no result yet to describe. It gets recorded normally
+            # when it finally returns on a later resume.
+            raise
         except Exception as e:
             if run_history and run_id:
                 run_history.record_step(run_id, node_name, "error", str(e), (time.monotonic() - start) * 1000)
@@ -262,7 +286,16 @@ def plan_node(state: GraphState, config: RunnableConfig, plan_fn: Callable[..., 
     plan = plan_fn(llm=llm, task=state.get("task", ""), files=state.get("task_files", []), feedback=feedback)
     return {"plan": plan}
 
-def approval_gate_node(state: GraphState, config: RunnableConfig) -> GraphState:
+def approval_gate_node(state: GraphState) -> GraphState:
+    """Everything before interrupt() re-runs on resume (LangGraph replays a
+    node from its own top) -- printing again is harmless, which is exactly
+    why nothing here does anything less idempotent than that before the
+    interrupt() call. The payload is a plain dict (checkpoint-safe, no
+    ProposedPR/product import); LangGraphEngine._run_graph reconstructs an
+    attribute-accessible plan object from it before calling a caller's
+    approve(), and passes that caller's return value straight through as the
+    resume value -- so what interrupt() returns here is duck-typed exactly
+    like the old config["configurable"]["approve"](plan) return was."""
     plan = state["plan"]
     print("\n=== Proposed plan ===")
     print(f"Title:  {plan.title}")
@@ -271,8 +304,13 @@ def approval_gate_node(state: GraphState, config: RunnableConfig) -> GraphState:
     for i, step in enumerate(plan.steps, 1):
         print(f"  {i}. [{step.kind}] {step.target_path} - {step.description}")
     print()
-    approve = config["configurable"]["approve"]
-    decision = approve(plan)  # duck-typed PlanDecision: .decision in {"approve","edit","reject"}, .feedback
+    decision = interrupt({
+        "kind": "plan_approval",
+        "plan": {
+            "title": plan.title, "branch": plan.branch, "body": plan.body,
+            "steps": [{"kind": s.kind, "target_path": s.target_path, "description": s.description} for s in plan.steps],
+        },
+    })
     if decision.decision == "approve":
         return {"approved": True, "plan_decision": "approve"}
     if decision.decision == "edit":
@@ -398,15 +436,15 @@ def push_failed_node(state: GraphState) -> GraphState:
 # visible act from "do the approved edit" (commit/push), so it gets its own
 # gate rather than riding on the plan approval from earlier in the run -----
 
-def pr_approval_gate_node(state: GraphState, config: RunnableConfig) -> GraphState:
+def pr_approval_gate_node(state: GraphState) -> GraphState:
     plan = state["plan"]
     diff = state.get("edit_diff", "")
     print("\n=== Ready to open a pull request ===")
     print(f"Title:  {plan.title}")
     print(f"Branch: {state.get('workspace_branch')}")
     print(f"Diff:\n{diff}\n")
-    approve_pr = config["configurable"]["approve_pr"]
-    if not approve_pr(diff, plan.title, plan.body):
+    approved = interrupt({"kind": "pr_approval", "title": plan.title, "body": plan.body, "diff": diff})
+    if not approved:
         return {"pr_approved": False, "pr_rejection_reason": "PR rejected by human"}
     return {"pr_approved": True}
 
@@ -550,6 +588,39 @@ class LangGraphEngine:
 
         return g.compile(checkpointer=self._checkpointer)
 
+    @staticmethod
+    def _plan_namespace(plan_dict: dict) -> SimpleNamespace:
+        """Reconstructs an attribute-accessible plan object (.title/.branch/
+        .body/.steps[i].kind/.target_path/.description) from interrupt()'s
+        plain-dict payload, so an approve() callback written against the old
+        ProposedPR-shaped callback (Chainlit, every task-flow smoke test)
+        doesn't need to change at all."""
+        steps = [SimpleNamespace(**s) for s in plan_dict["steps"]]
+        return SimpleNamespace(title=plan_dict["title"], branch=plan_dict["branch"], body=plan_dict["body"], steps=steps)
+
+    def _run_graph(self, initial_input: Any, config: dict, approve, approve_pr) -> dict:
+        """Invoke the graph and resolve any approval interrupt it hits via
+        approve/approve_pr, looping until the graph reaches END -- or, if no
+        callback is available to resolve a given interrupt, returning the
+        paused result as-is (result["__interrupt__") for a caller to resume
+        later, possibly in a different process (see resume_task/app/resume.py).
+
+        initial_input is {"question": ..., ...} to start a fresh run, or None
+        to continue whatever thread_id's checkpoint already has pending."""
+        result = self._graph.invoke(initial_input, config=config)
+        while result.get("__interrupt__"):
+            payload = result["__interrupt__"][0].value
+            kind = payload.get("kind")
+            if kind == "plan_approval" and approve is not None:
+                decision = approve(self._plan_namespace(payload["plan"]))
+                result = self._graph.invoke(Command(resume=decision), config=config)
+            elif kind == "pr_approval" and approve_pr is not None:
+                approved = bool(approve_pr(payload["diff"], payload["title"], payload["body"]))
+                result = self._graph.invoke(Command(resume=approved), config=config)
+            else:
+                return result  # nobody to resolve this right now -- stay paused
+        return result
+
     def ask(self, question: str, thread_id: str = "default") -> Answer:
         with _tracer.start_as_current_span("engine.ask") as span:
             span.set_attribute("engine.thread_id", thread_id)
@@ -557,17 +628,19 @@ class LangGraphEngine:
             run_id = self.run_history.start_run(thread_id, "qa", question) if self.run_history else None
             config = {"configurable": {
                 "thread_id": thread_id,
-                # A plain question should never reach the task path's approval
-                # gates, but the fallback is duck-typed like a real
-                # PlanDecision (not a bare bool) so it wouldn't crash
-                # approval_gate_node's decision.decision read if it somehow did.
-                "approve": lambda *_: SimpleNamespace(decision="reject", feedback=None),
-                "approve_pr": lambda *_: False,
+                "on_progress": lambda *_: None,
                 "run_history": self.run_history,
                 "run_id": run_id,
             }}
+            # A plain question should never reach the task path's approval
+            # gates (classify_intent routes those to prepare_workspace, not
+            # retrieve) -- but if it somehow did, auto-reject immediately
+            # rather than leave a supposedly-synchronous ask() call paused
+            # with no way for this caller to resolve it.
+            reject_plan = lambda _plan: SimpleNamespace(decision="reject", feedback=None)
+            reject_pr = lambda *_: False
             try:
-                result = self._graph.invoke({"question": question}, config=config)
+                result = self._run_graph({"question": question}, config, reject_plan, reject_pr)
             except Exception as e:
                 if self.run_history and run_id:
                     self.run_history.finish_run(run_id, "failed", str(e))
@@ -586,32 +659,80 @@ class LangGraphEngine:
         approve_pr: Callable[[str, str, str], bool] | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> dict:
-        """approve receives the ProposedPR and returns a duck-typed
-        PlanDecision (product.approval.PlanDecision, or anything with the
-        same .decision/.feedback shape). approve_pr receives (diff, title,
-        body) for the second, PR-specific gate and returns a plain bool.
-        Both default to a safe "never proceed without an explicit human
-        decision" rather than silently running unattended."""
+        """approve receives a plan object (.title/.branch/.body/.steps[i].kind/
+        .target_path/.description) and returns a duck-typed PlanDecision
+        (product.approval.PlanDecision, or anything with the same
+        .decision/.feedback shape). approve_pr receives (diff, title, body)
+        for the second, PR-specific gate and returns a plain bool.
+
+        If neither is given, hitting an approval gate pauses the run (real
+        interrupt() + checkpoint to .data/checkpoints.db) and this returns
+        immediately with result["__interrupt__"] set, instead of blocking --
+        continue it later, in this process or a fresh one, with resume_task()
+        or `python -m app.resume <thread_id>`."""
         with _tracer.start_as_current_span("engine.run_task") as span:
             span.set_attribute("engine.thread_id", thread_id)
             span.set_attribute("engine.task", task)
             run_id = self.run_history.start_run(thread_id, "task", task) if self.run_history else None
             config = {"configurable": {
                 "thread_id": thread_id,
-                "approve": approve or (lambda *_: SimpleNamespace(decision="reject", feedback=None)),
-                "approve_pr": approve_pr or (lambda *_: False),
                 "on_progress": on_progress or (lambda *_: None),
                 "run_history": self.run_history,
                 "run_id": run_id,
             }}
             try:
-                result = self._graph.invoke({"question": task, "attempt": 1}, config=config)
+                result = self._run_graph({"question": task, "attempt": 1}, config, approve, approve_pr)
             except Exception as e:
                 if self.run_history and run_id:
                     self.run_history.finish_run(run_id, "failed", str(e))
                 raise
+            if result.get("__interrupt__"):
+                span.set_attribute("engine.paused", True)
+                return result  # run_history row stays 'running' -- resume_task() finishes it
             if self.run_history and run_id:
                 self.run_history.finish_run(run_id, "completed")
             span.set_attribute("engine.approved", bool(result.get("approved")))
             span.set_attribute("engine.attempts", result.get("attempt", 1))
+            return result
+
+    def resume_task(
+        self,
+        thread_id: str,
+        approve: Callable[[Any], Any] | None = None,
+        approve_pr: Callable[[str, str, str], bool] | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> dict:
+        """Continue a run sitting at an approval interrupt for thread_id --
+        loaded purely from the checkpointer, so this works from a brand new
+        LangGraphEngine instance in a brand new process; nothing about the
+        original run_task() call needs to still be alive. Raises RuntimeError
+        if thread_id has no paused run to resume."""
+        with _tracer.start_as_current_span("engine.resume_task") as span:
+            span.set_attribute("engine.thread_id", thread_id)
+            peek_config = {"configurable": {"thread_id": thread_id}}
+            snapshot = self._graph.get_state(peek_config)
+            if not snapshot.next:
+                raise RuntimeError(
+                    f"no paused run found for thread_id={thread_id!r} -- "
+                    "it may have already finished, failed, or never started"
+                )
+            run_id = self.run_history.find_running_run(thread_id) if self.run_history else None
+            config = {"configurable": {
+                "thread_id": thread_id,
+                "on_progress": on_progress or (lambda *_: None),
+                "run_history": self.run_history,
+                "run_id": run_id,
+            }}
+            try:
+                result = self._run_graph(None, config, approve, approve_pr)
+            except Exception as e:
+                if self.run_history and run_id:
+                    self.run_history.finish_run(run_id, "failed", str(e))
+                raise
+            if result.get("__interrupt__"):
+                span.set_attribute("engine.paused", True)
+                return result  # paused again at the next gate (e.g. pr_gate after approving the plan)
+            if self.run_history and run_id:
+                self.run_history.finish_run(run_id, "completed")
+            span.set_attribute("engine.approved", bool(result.get("approved")))
             return result

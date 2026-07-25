@@ -103,6 +103,13 @@ class SqliteRunHistory:
         cols = ("id", "run_id", "node", "status", "detail", "duration_ms", "created_at")
         return [dict(zip(cols, row)) for row in rows]
 
+    def find_running_run(self, thread_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT id FROM runs WHERE thread_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        return row[0] if row else None
+
     def _resolve_run_id(self, run_id: str) -> str | None:
         """Exact id, or -- for a friendlier CLI -- a unique prefix of one."""
         row = self._conn.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()

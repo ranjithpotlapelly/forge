@@ -39,3 +39,13 @@ class RunHistory(Protocol):
     def list_steps(self, run_id: str) -> list[dict[str, Any]]:
         """A run's steps in the order they happened."""
         ...
+
+    def find_running_run(self, thread_id: str) -> str | None:
+        """The most recent still-'running' run for a thread, or None.
+
+        (Phase 20) Lets a resumed run -- possibly in a brand new process,
+        with no in-memory link back to the run_id its original run_task()
+        call created -- keep recording run_steps under that same run
+        instead of losing the correlation or minting a misleading new one.
+        """
+        ...

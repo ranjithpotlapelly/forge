@@ -35,6 +35,7 @@ from product.indexing import index_repo
 
 TEST_REPO = r"C:\Users\Ranjith\AI-Space\forge-test-repo"
 TASK = "Add a docstring to the greet function in math_utils.py"
+TEST_CHECKPOINT_PATH = "./.data/checkpoints_task_flow_ui_smoke_test.db"
 
 def _snapshot(workspace: Path) -> dict[str, str]:
     result = {}
@@ -62,7 +63,9 @@ def main() -> int:
     cfg = copy.deepcopy(base_cfg)
     cfg["forge"]["repo_path"] = TEST_REPO
     cfg["retriever"]["collection"] = "forge_task_flow_ui_smoke_test"
-    cfg["engine"]["checkpoint_path"] = None
+    # Phase 20: approval_gate now uses interrupt(), which requires a real checkpointer.
+    Path(TEST_CHECKPOINT_PATH).unlink(missing_ok=True)
+    cfg["engine"]["checkpoint_path"] = TEST_CHECKPOINT_PATH
 
     ingest = build_ingest(cfg)
     retriever = build_retriever(cfg)

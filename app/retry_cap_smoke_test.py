@@ -19,6 +19,7 @@ from product.approval import PlanDecision
 from product.indexing import index_repo
 
 TEST_REPO = r"C:\Users\Ranjith\AI-Space\forge-test-repo-failing"
+TEST_CHECKPOINT_PATH = "./.data/checkpoints_retry_cap_smoke_test.db"
 
 def main() -> int:
     base_cfg = load_config()
@@ -31,7 +32,9 @@ def main() -> int:
     stats = index_repo(ingest, retriever)
     print(f"[ok] indexed {stats['symbols']} chunk(s) across {stats['files']} file(s) from the throwaway (always-failing-tests) repo")
 
-    cfg["engine"]["checkpoint_path"] = None
+    # Phase 20: approval_gate now uses interrupt(), which requires a real checkpointer.
+    Path(TEST_CHECKPOINT_PATH).unlink(missing_ok=True)
+    cfg["engine"]["checkpoint_path"] = TEST_CHECKPOINT_PATH
     engine = build_engine(cfg, retriever=retriever)
     workspace = Path(cfg["tools"]["workspace"]).resolve()
 

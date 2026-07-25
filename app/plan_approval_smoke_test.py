@@ -19,6 +19,7 @@ from product.approval import PlanDecision
 from product.indexing import index_repo
 
 TEST_REPO = r"C:\Users\Ranjith\AI-Space\forge-test-repo"
+TEST_CHECKPOINT_PATH = "./.data/checkpoints_plan_approval_smoke_test.db"
 
 def _snapshot(workspace: Path) -> dict[str, str]:
     result = {}
@@ -39,7 +40,12 @@ def main() -> int:
     stats = index_repo(ingest, retriever)
     print(f"[ok] indexed {stats['symbols']} chunk(s) across {stats['files']} file(s) from the throwaway test repo into a separate collection")
 
-    cfg["engine"]["checkpoint_path"] = None  # skip checkpointing for this test — irrelevant to what's being proven
+    # Phase 20: approval_gate now uses interrupt(), which requires a real
+    # checkpointer -- a dedicated file (not the default .data/checkpoints.db,
+    # and wiped each run) so this test's thread_ids never collide with a
+    # real session's.
+    Path(TEST_CHECKPOINT_PATH).unlink(missing_ok=True)
+    cfg["engine"]["checkpoint_path"] = TEST_CHECKPOINT_PATH
     engine = build_engine(cfg, retriever=retriever)
     workspace = Path(cfg["tools"]["workspace"]).resolve()
 
