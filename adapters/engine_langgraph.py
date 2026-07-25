@@ -736,3 +736,15 @@ class LangGraphEngine:
                 self.run_history.finish_run(run_id, "completed")
             span.set_attribute("engine.approved", bool(result.get("approved")))
             return result
+
+    def delete_thread(self, thread_id: str) -> None:
+        """Delete everything for a thread (Phase 21): its checkpoints (if a
+        checkpointer is configured -- SqliteSaver.delete_thread(), a native
+        LangGraph method, not something reimplemented here) and its
+        run_history rows (runs + run_steps). Two separate kinds of per-thread
+        state, deliberately kept in separate stores (see core/run_history.py's
+        module docstring); this is the one place that knows to clear both."""
+        if self._checkpointer is not None:
+            self._checkpointer.delete_thread(thread_id)
+        if self.run_history:
+            self.run_history.delete_thread(thread_id)

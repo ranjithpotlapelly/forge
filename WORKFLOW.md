@@ -245,6 +245,9 @@ the next began.
 | 17 | Chainlit task-flow UI: plan card, Approve/Edit/Reject buttons, PR gate | done |
 | 18 | `fetch_issue` tool (read-only GitHub issue fetch, `#N` detection in chat) | done |
 | 19 | Run history (`runs`/`run_steps` tables, `core.run_history.RunHistory`, `python -m app.history`) | done |
+| 20 | Approval gate on `interrupt()` + checkpoint (survives a restart), `python -m app.resume` | done |
+| 21 | Conversation history in Chainlit (`/history`, resume/delete a thread) | done |
+| 22 | Hosted (OpenAI-compatible) LLM adapter for `llm`/`code_model` | done |
 
 ## 8. Upgrade path
 

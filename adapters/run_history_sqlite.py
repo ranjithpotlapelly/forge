@@ -110,6 +110,43 @@ class SqliteRunHistory:
         ).fetchone()
         return row[0] if row else None
 
+    def list_threads(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self._conn.execute("""
+            SELECT
+                r.thread_id,
+                (SELECT task_text FROM runs f WHERE f.thread_id = r.thread_id ORDER BY f.started_at ASC LIMIT 1) AS title,
+                (SELECT kind FROM runs f WHERE f.thread_id = r.thread_id ORDER BY f.started_at ASC LIMIT 1) AS kind,
+                COUNT(*) AS run_count,
+                MIN(r.started_at) AS started_at,
+                MAX(r.started_at) AS last_active_at,
+                (SELECT status FROM runs l WHERE l.thread_id = r.thread_id ORDER BY l.started_at DESC LIMIT 1) AS status,
+                (SELECT id FROM runs l WHERE l.thread_id = r.thread_id ORDER BY l.started_at DESC LIMIT 1) AS latest_run_id
+            FROM runs r
+            GROUP BY r.thread_id
+            ORDER BY last_active_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        cols = ("thread_id", "title", "kind", "run_count", "started_at", "last_active_at", "status", "latest_run_id")
+        return [dict(zip(cols, row)) for row in rows]
+
+    def list_runs_for_thread(self, thread_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT id, thread_id, kind, task_text, status, started_at, ended_at, error "
+            "FROM runs WHERE thread_id = ? ORDER BY started_at ASC",
+            (thread_id,),
+        ).fetchall()
+        return [self._run_row(row) for row in rows]
+
+    def delete_thread(self, thread_id: str) -> int:
+        run_ids = [row[0] for row in self._conn.execute("SELECT id FROM runs WHERE thread_id = ?", (thread_id,)).fetchall()]
+        if not run_ids:
+            return 0
+        placeholders = ",".join("?" * len(run_ids))
+        self._conn.execute(f"DELETE FROM run_steps WHERE run_id IN ({placeholders})", run_ids)
+        self._conn.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", run_ids)
+        self._conn.commit()
+        return len(run_ids)
+
     def _resolve_run_id(self, run_id: str) -> str | None:
         """Exact id, or -- for a friendlier CLI -- a unique prefix of one."""
         row = self._conn.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()

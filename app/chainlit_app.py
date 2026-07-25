@@ -1,8 +1,17 @@
-"""Chainlit chat interface (Phase 8/16/17/18): the user-facing surface for
+"""Chainlit chat interface (Phase 8/16/17/18/21): the user-facing surface for
 Forge's Q&A engine, its plan/edit/test/commit/push/open_pr task flow --
 previously reachable only by calling LangGraphEngine.run_task() from a
-terminal with a hardcoded approve lambda -- and fetch_issue (Phase 18):
-"fix #42" used to require pasting the issue text in by hand.
+terminal with a hardcoded approve lambda -- fetch_issue (Phase 18): "fix
+#42" used to require pasting the issue text in by hand -- and conversation
+history (Phase 21): thread_id used to be a per-browser-session UUID with no
+listing or resume UI, even though the checkpointer underneath already
+supported it. /history lists past threads (core.run_history.RunHistory --
+the same audit trail every graph node already writes to, not a second
+store) with Resume/Delete buttons; resuming a Q&A thread replays its
+transcript and rebinds this session to it, resuming a task thread continues
+it from its checkpoint via LangGraphEngine.resume_task() -- including one
+still paused mid-approval, exactly like `python -m app.resume` but from the
+browser.
 
 Streams answers token-by-token (LLMClient.stream(), Phase 16) instead of
 Phase 8's blocking cl.Message(answer.text).send() -- on CPU a full answer
@@ -42,7 +51,7 @@ from app.config_loader import load_config
 from app.index import run_index
 from app.wiring import (
     build_engine, build_fetch_issue_tool, build_llm, build_retriever,
-    build_run_history, build_store, build_tracing,
+    build_run_history, build_tracing,
 )
 from core.types import Chunk
 from product.approval import PlanDecision
@@ -53,7 +62,12 @@ _tracing = build_tracing(_cfg)
 _tracing.start()
 _llm = build_llm(_cfg)
 _retriever = build_retriever(_cfg)
-_store = build_store(_cfg)
+# The single source of truth for conversation history (Phase 21) -- not
+# core.store.StateStore, which Phase 16 originally used for a parallel
+# "chat:{thread_id}:{ts}" log. That log had no reader anywhere and would
+# have become a second, divergent copy of the same data once run_history
+# grew rich enough to reconstruct a transcript on its own; removed rather
+# than kept in sync by hand.
 _run_history = build_run_history(_cfg)
 _engine = build_engine(_cfg, llm=_llm, retriever=_retriever)
 _fetch_issue_tool = build_fetch_issue_tool(_cfg)
@@ -69,6 +83,7 @@ _LANGUAGE_BY_EXTENSION = {
 _HELP_TEXT = (
     "**Available commands**\n"
     "- `/index <path>` — index a repo (structure-aware chunking + embedding) so it becomes askable\n"
+    "- `/history` — list past conversations, with buttons to resume or delete each one\n"
     "- `/help` — show this message\n\n"
     "Anything else is classified as either a question about the indexed codebase "
     "(answered directly) or a task (\"fix ...\", \"add ...\", \"refactor ...\") that "
@@ -157,12 +172,11 @@ async def _handle_question(question: str, thread_id: str) -> None:
 
     if has_context({"chunks": chunks}) != "answer":
         canned = decline({})["answer"]
-        _run_history.record_step(run_id, "decline", "ok", None, None)
+        # detail carries the actual text, not just an outcome flag -- this is
+        # what lets /history's "resume" replay a full Q&A transcript straight
+        # from run_history, with no second, parallel copy of the same data.
+        _run_history.record_step(run_id, "decline", "ok", json.dumps({"answer": canned.text}), None)
         _run_history.finish_run(run_id, "completed")
-        _store.put(
-            f"chat:{thread_id}:{int(time.time() * 1000)}",
-            {"question": question, "answer": canned.text, "citations": 0},
-        )
         await cl.Message(content=canned.text).send()
         return
 
@@ -177,7 +191,10 @@ async def _handle_question(question: str, thread_id: str) -> None:
         await cl.Message(content=f"Something went wrong while generating the answer: {e}").send()
         return
     await msg.send()
-    _run_history.record_step(run_id, "answer", "ok", json.dumps({"citations": len(chunks)}), (time.monotonic() - t1) * 1000)
+    _run_history.record_step(
+        run_id, "answer", "ok",
+        json.dumps({"answer": full_text, "citations": len(chunks)}), (time.monotonic() - t1) * 1000,
+    )
     _run_history.finish_run(run_id, "completed")
 
     _store.put(
@@ -366,6 +383,134 @@ async def _handle_task(task: str, session_thread_id: str) -> None:
 
     await _report_task_result(result)
 
+# --- conversation history (Phase 21) ------------------------------------------
+# Everything here reads core.run_history.RunHistory -- the same table every
+# graph node and the Q&A path above already write to -- and nothing else;
+# there is no separate "thread list" store to keep in sync.
+
+def _truncate(text: str, n: int = 60) -> str:
+    text = (text or "").replace("\n", " ").strip()
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+def _short_ts(ts: str | None) -> str:
+    return (ts or "")[:19].replace("T", " ")
+
+def _thread_actions(thread_id: str) -> list[cl.Action]:
+    return [
+        cl.Action(name="resume_thread", payload={"thread_id": thread_id}, label="▶ Resume"),
+        cl.Action(name="delete_thread", payload={"thread_id": thread_id}, label="🗑 Delete"),
+    ]
+
+async def _handle_history() -> None:
+    threads = _run_history.list_threads(limit=20)
+    if not threads:
+        await cl.Message(content="No past conversations yet.").send()
+        return
+    await cl.Message(content=f"**{len(threads)} past conversation(s)** (most recently active first):").send()
+    for t in threads:
+        icon = {"qa": "💬", "task": "🛠"}.get(t["kind"], "•")
+        content = (
+            f"{icon} **{_truncate(t['title'])}**\n"
+            f"`{t['thread_id']}` — {t['kind']}, {t['run_count']} run(s), "
+            f"status={t['status']}, last active {_short_ts(t['last_active_at'])}"
+        )
+        await cl.Message(content=content, actions=_thread_actions(t["thread_id"])).send()
+
+async def _replay_qa_transcript(thread_id: str) -> None:
+    """Reconstructs a Q&A conversation purely from run_history: each run's
+    task_text is the question; its "answer"/"decline" step's detail (stored
+    as JSON including the real text, not just an outcome flag) is the reply."""
+    runs = _run_history.list_runs_for_thread(thread_id)
+    for run in runs:
+        await cl.Message(content=run["task_text"], author="You", type="user_message").send()
+        steps = _run_history.list_steps(run["id"])
+        reply_step = next((s for s in steps if s["node"] in ("answer", "decline")), None)
+        text = "(no answer recorded for this turn)"
+        if reply_step and reply_step["detail"]:
+            try:
+                text = json.loads(reply_step["detail"]).get("answer", text)
+            except (TypeError, ValueError):
+                pass
+        await cl.Message(content=text).send()
+
+async def _show_task_summary(run: dict) -> None:
+    """A finished (completed/failed) task thread can't be resumed -- its
+    checkpoint has already reached END -- so this reconstructs what happened
+    from run_history's steps instead, the same audit trail `python -m
+    app.history <id>` reads."""
+    lines = [f"**Task:** {run['task_text']}", f"**Status:** {run['status']}"]
+    if run.get("error"):
+        lines.append(f"**Error:** {run['error']}")
+    for s in _run_history.list_steps(run["id"]):
+        if s["node"] in ("approval_gate", "pr_gate") and s["detail"]:
+            try:
+                decision = json.loads(s["detail"]).get("decision")
+                lines.append(f"- {s['node']}: {decision}")
+            except (TypeError, ValueError):
+                pass
+        elif s["node"] in ("commit", "push", "open_pr", "give_up"):
+            lines.append(f"- {s['node']}: {s['status']}")
+    await cl.Message(content="\n".join(lines)).send()
+
+async def _resume_thread(thread_id: str) -> None:
+    threads = {t["thread_id"]: t for t in _run_history.list_threads(limit=200)}
+    thread = threads.get(thread_id)
+    if thread is None:
+        await cl.Message(content=f"No conversation found for `{thread_id}`.").send()
+        return
+
+    if thread["kind"] == "qa":
+        await _replay_qa_transcript(thread_id)
+        # Rebind this session to the resumed thread so new questions keep
+        # appending to the same conversation, not a fresh one.
+        cl.user_session.set("thread_id", thread_id)
+        await cl.Message(content="_(resumed -- continue asking questions in this conversation)_").send()
+        return
+
+    # kind == "task"
+    run = _run_history.get_run(thread["latest_run_id"])
+    if thread["status"] != "running":
+        await _show_task_summary(run)
+        return
+
+    loop = asyncio.get_running_loop()
+    progress = cl.Message(content=f"**Resuming task:** {run['task_text']}")
+    await progress.send()
+
+    def on_progress(text: str) -> None:
+        progress.content += f"\n\n{text}"
+        asyncio.run_coroutine_threadsafe(progress.update(), loop)
+
+    try:
+        result = await asyncio.to_thread(
+            _engine.resume_task, thread_id,
+            _make_plan_approver(loop), _make_pr_approver(loop), on_progress,
+        )
+    except Exception as e:  # noqa: BLE001 -- e.g. the checkpoint is gone; shown, not swallowed
+        await cl.Message(content=f"Could not resume: {e}").send()
+        return
+    await _report_task_result(result)
+
+@cl.action_callback("resume_thread")
+async def on_resume_thread(action: cl.Action) -> None:
+    await _resume_thread(action.payload["thread_id"])
+
+@cl.action_callback("delete_thread")
+async def on_delete_thread(action: cl.Action) -> None:
+    thread_id = action.payload["thread_id"]
+    res = await cl.AskActionMessage(
+        content=f"Delete conversation `{thread_id}`? This removes its checkpoints and history permanently.",
+        actions=[
+            cl.Action(name="confirm", payload={}, label="🗑 Yes, delete"),
+            cl.Action(name="cancel", payload={}, label="Cancel"),
+        ],
+        timeout=60,
+    ).send()
+    if not res or res["name"] != "confirm":
+        return
+    _engine.delete_thread(thread_id)
+    await cl.Message(content=f"Deleted `{thread_id}`.").send()
+
 @cl.on_chat_start
 async def on_chat_start():
     thread_id = str(uuid.uuid4())
@@ -373,7 +518,7 @@ async def on_chat_start():
     await cl.Message(
         content="Ask me anything about the indexed codebase, or describe a change "
         "(\"fix ...\", \"add ...\") and I'll propose a plan for your approval. "
-        "Type `/help` for commands."
+        "Type `/help` for commands, or `/history` to resume a past conversation."
     ).send()
 
 @cl.on_message
@@ -392,6 +537,10 @@ async def on_message(message: cl.Message):
             await cl.Message(content="Usage: `/index C:\\path\\to\\repo`").send()
             return
         await _handle_index(arg)
+        return
+
+    if lowered == "/history":
+        await _handle_history()
         return
 
     text = await _maybe_enrich_with_issue(text)

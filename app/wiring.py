@@ -17,17 +17,26 @@ def _build_ollama_llm(section: dict, cfg: dict) -> LLMClient:
     rest = {k: v for k, v in section.items() if k not in ("adapter", "model", "host")}
     return OllamaLLM(model=section["model"], host=section.get("host", cfg["llm"]["host"]), **rest)
 
-def build_llm(cfg: dict) -> LLMClient:
-    section = cfg["llm"]
-    if section["adapter"] == "ollama":
+def _build_openai_compatible_llm(section: dict) -> LLMClient:
+    from adapters.llm_openai_compatible import OpenAICompatibleLLM
+    rest = {k: v for k, v in section.items() if k not in ("adapter", "model", "base_url", "api_key")}
+    return OpenAICompatibleLLM(
+        model=section["model"], base_url=section["base_url"], api_key=section.get("api_key", ""), **rest,
+    )
+
+def _build_llm_from_section(section: dict, cfg: dict) -> LLMClient:
+    adapter = section["adapter"]
+    if adapter == "ollama":
         return _build_ollama_llm(section, cfg)
-    raise ValueError(f"Unknown llm adapter: {section['adapter']}")
+    if adapter == "openai_compatible":
+        return _build_openai_compatible_llm(section)
+    raise ValueError(f"Unknown llm adapter: {adapter}")
+
+def build_llm(cfg: dict) -> LLMClient:
+    return _build_llm_from_section(cfg["llm"], cfg)
 
 def build_code_model(cfg: dict) -> LLMClient:
-    section = cfg["code_model"]
-    if section["adapter"] == "ollama":
-        return _build_ollama_llm(section, cfg)
-    raise ValueError(f"Unknown code_model adapter: {section['adapter']}")
+    return _build_llm_from_section(cfg["code_model"], cfg)
 
 def build_retriever(cfg: dict) -> Retriever:
     section = cfg["retriever"]

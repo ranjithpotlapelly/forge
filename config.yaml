@@ -19,6 +19,13 @@ llm:
 code_model:
   adapter: ollama
   model: llama3.2:1b           # smaller/faster model for the code-edit step
+  # Upgrade path (Phase 22): swap ONLY this block to move the code-edit step
+  # to a hosted, OpenAI-compatible endpoint -- llm/embeddings stay local and
+  # free. -> adapters/llm_openai_compatible.py. See README's "Upgrade path".
+  #   adapter: openai_compatible
+  #   model: gpt-4o-mini
+  #   base_url: https://api.openai.com/v1
+  #   api_key: ${CODE_MODEL_API_KEY}    # from .env; never hardcode, never logged
 
 # --- Knowledge (Phase 3) ---
 embeddings:

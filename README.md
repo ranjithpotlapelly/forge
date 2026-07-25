@@ -123,6 +123,42 @@ shared pieces are promoted into `core/` — no rewrite.
 
 ---
 
+## Upgrade path: pointing code_model at a hosted API (Phase 22)
+
+Local CPU inference caps answer and patch quality, and the code-edit step
+(`code_model`) feels it most — it's the smallest, fastest local model, since
+patches are generated far more often than plans. `adapters/llm_openai_compatible.py`
+implements the same `core.llm.LLMClient` port `adapters/llm_ollama.py` does,
+so swapping one for the other is a `config.yaml` edit — nothing in `core/`,
+`product/`, or anywhere else a model is consumed changes.
+
+To move **only** the code-edit step to a hosted, OpenAI-compatible endpoint
+(OpenAI itself, or any provider that mirrors its `/chat/completions` shape)
+and keep `llm` (the primary reasoning model) and `embeddings` local and free:
+
+1. Add your key to `.env` (already reserved there, blank by default):
+   ```
+   CODE_MODEL_API_KEY=sk-...
+   CODE_MODEL_BASE_URL=https://api.openai.com/v1
+   ```
+2. In `config.yaml`, change **only** the `code_model:` block:
+   ```yaml
+   code_model:
+     adapter: openai_compatible
+     model: gpt-4o-mini
+     base_url: ${CODE_MODEL_BASE_URL}
+     api_key: ${CODE_MODEL_API_KEY}
+   ```
+3. Leave `llm:` and `embeddings:` exactly as they are. Nothing else changes —
+   `product/code_edit.py` calls `code_model.generate()`/`.propose_edit()` the
+   same way regardless of which adapter is behind it.
+
+The same adapter works for `llm:` too (any slot typed `core.llm.LLMClient`),
+if you'd rather upgrade reasoning quality instead of (or as well as) the
+code-edit step.
+
+---
+
 ## Build roadmap
 
 | Phase | Layer | Status |
@@ -146,6 +182,9 @@ shared pieces are promoted into `core/` — no rewrite.
 | 17 | Chainlit task-flow UI: plan card, Approve/Edit/Reject, PR gate | done |
 | 18 | `fetch_issue` tool (read-only GitHub issue fetch, `#N` detection in chat) | done |
 | 19 | Run history (`runs`/`run_steps` tables, `core.run_history.RunHistory`, `python -m app.history`) | done |
+| 20 | Approval gate on `interrupt()` + checkpoint (survives a restart), `python -m app.resume` | done |
+| 21 | Conversation history in Chainlit (`/history`, resume/delete a thread) | done |
+| 22 | Hosted (OpenAI-compatible) LLM adapter for `llm`/`code_model` | done |
 
 We build one phase per step, each testable on its own before the next.
 

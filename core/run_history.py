@@ -49,3 +49,30 @@ class RunHistory(Protocol):
         instead of losing the correlation or minting a misleading new one.
         """
         ...
+
+    def list_threads(self, limit: int = 20) -> list[dict[str, Any]]:
+        """One row per distinct thread_id, most recently active first --
+        the "conversation list" a UI shows (Phase 21). Each row:
+        thread_id, title (the first run's task_text, i.e. the first user
+        message), kind, run_count, started_at (first run), last_active_at
+        (most recent run), status (of the most recent run), latest_run_id.
+
+        A thread_id is homogeneous by construction (a Q&A session's
+        thread_id accumulates multiple "qa" runs; a task's thread_id is
+        unique to that one task and never reused), so "kind"/"status" here
+        unambiguously describe the whole thread, not just one run of it.
+        """
+        ...
+
+    def list_runs_for_thread(self, thread_id: str) -> list[dict[str, Any]]:
+        """Every run for a thread_id, oldest first -- e.g. every question
+        asked in one Q&A session, in order, to replay as a transcript."""
+        ...
+
+    def delete_thread(self, thread_id: str) -> int:
+        """Delete every run (and its steps) for a thread_id. Returns the
+        number of runs deleted. Does not touch the checkpointer -- pair with
+        LangGraphEngine.delete_thread() (adapters/engine_langgraph.py) to
+        also remove its checkpoints, per this port's own separation from
+        that other kind of per-thread state (see module docstring)."""
+        ...
