@@ -18,6 +18,11 @@ RUN uv pip install --python /opt/venv/bin/python -r requirements.txt
 FROM python:3.14-slim
 WORKDIR /app
 
+# git: adapters/mcp_servers/workspace_server.py shells out to it (init/add/
+# commit) for the sandboxed workspace -- python:3.14-slim doesn't ship it.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

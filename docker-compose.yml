@@ -18,6 +18,11 @@ services:
       # ChromaDB container bound to host port 8000. Container-internal port
       # stays 8000 (Chainlit's default).
       - "8010:8000"
+    # GITHUB_TOKEN, CODE_MODEL_* (api key/base_url/name/fallbacks) etc. --
+    # everything config.yaml's ${VAR} substitution needs that isn't overridden
+    # below for container-specific networking.
+    env_file:
+      - .env
     environment:
       # host.docker.internal reaches the host's natively-installed Ollama.
       # Docker Desktop (Windows/Mac) resolves this out of the box; the
