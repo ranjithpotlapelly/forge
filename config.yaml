@@ -108,7 +108,7 @@ github:
 
 # --- Forge product settings ---
 forge:
-  repo_path: "/mnt/host_projects/rag-frontend-angular/rag-frontend"  # local checkout the task/edit/test pipeline targets (prepare_workspace/run_tests) -- NOT the same as whatever /index was last pointed at, which only widens Q&A retrieval. Points at the actual Angular project root (package.json lives here), not its wrapper folder, so run_tests' root-only marker detection can find it.
+  repo_path: "/mnt/host_projects/rag-frontend-angular-v2/rag-frontend"  # local checkout the task/edit/test pipeline targets (prepare_workspace/run_tests) -- NOT the same as whatever /index was last pointed at, which only widens Q&A retrieval. Points at the actual Angular project root (package.json lives here), not its wrapper folder, so run_tests' root-only marker detection can find it. "-v2": reconciled with the real upstream GitHub repo (ranjithpotlapelly/rag-frontend) after discovering the original local copy was missing several files present on GitHub.
   languages: [python, javascript, typescript, go]
   # Anything that touches the outside world pauses for human approval:
   require_approval_for: [write_file, commit, push, open_pr]
