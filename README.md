@@ -12,11 +12,6 @@ upgrades to hosted services one file at a time.
 
 ---
 
-## Setup (Windows, CPU-first)
-
-Your machine (Ryzen 7 7735U, 16 GB, integrated GPU) runs everything locally on
-CPU. Inference is slow but fully functional — perfect for building and learning.
-
 ### 1. Install Ollama and start it
 Download from https://ollama.com/download, install, then in a terminal:
 ```
