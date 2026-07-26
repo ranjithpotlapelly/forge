@@ -195,14 +195,33 @@ def has_context(state: GraphState) -> str:
         return "answer"
     return "decline"
 
-def build_answer_messages(question: str, chunks: list[Chunk]) -> list[Message]:
+def build_answer_messages(
+    question: str, chunks: list[Chunk], max_expanded: int | None = None,
+) -> list[Message]:
     """The Q&A prompt: shared by the `answer` node (llm.generate, below) and
     the Chainlit UI's streaming path (llm.stream) so both ask the model the
-    exact same question the exact same way -- one place defines it."""
+    exact same question the exact same way -- one place defines it.
+
+    Phase 23 (perf tuning): chunks are assumed already ranked best-first by
+    the retriever. When max_expanded is given and there are more chunks than
+    that, only the top max_expanded get their full body in the prompt; the
+    rest contribute a path-only reference line -- trims prefill without an
+    extra LLM call to summarize them.
+    """
+    if max_expanded is not None and len(chunks) > max_expanded:
+        expanded, referenced = chunks[:max_expanded], chunks[max_expanded:]
+    else:
+        expanded, referenced = chunks, []
     context = "\n\n".join(
         f"[{c.metadata.get('path', '?')}:{c.metadata.get('start_line', '?')}]\n{c.content}"
-        for c in chunks
+        for c in expanded
     )
+    if referenced:
+        refs = "\n".join(
+            f"[{c.metadata.get('path', '?')}:{c.metadata.get('start_line', '?')}] (not expanded)"
+            for c in referenced
+        )
+        context = f"{context}\n\nOther possibly relevant locations:\n{refs}"
     return [
         Message(role="system", content=(
             "Answer the question using only the provided code context. "

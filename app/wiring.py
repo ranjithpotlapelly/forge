@@ -35,6 +35,9 @@ def _build_llm_from_section(section: dict, cfg: dict) -> LLMClient:
 def build_llm(cfg: dict) -> LLMClient:
     return _build_llm_from_section(cfg["llm"], cfg)
 
+def build_answer_model(cfg: dict) -> LLMClient:
+    return _build_llm_from_section(cfg["answer_model"], cfg)
+
 def build_code_model(cfg: dict) -> LLMClient:
     return _build_llm_from_section(cfg["code_model"], cfg)
 

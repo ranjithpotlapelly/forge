@@ -159,6 +159,93 @@ code-edit step.
 
 ---
 
+## Performance tuning (Phase 23)
+
+On this machine (Ryzen 7 7735U / Radeon 680M iGPU / 16 GB shared RAM,
+CPU-first Ollama inference) a Q&A answer used to take 2-3 minutes. Config-only
+fixes — `adapters/llm_ollama.py` still the only file that talks to Ollama, no
+inference-engine changes:
+
+- **`answer_model`** (`config.yaml`): the Q&A path (`app/chainlit_app.py`)
+  uses a separate, smaller/faster model (default `qwen3:4b`) than `llm.model`
+  (`qwen3:8b`, kept for planning/task work). `qwen3:8b` is a thinking model —
+  its `<think>...</think>` reasoning (see `_strip_think` in
+  `adapters/llm_ollama.py`) is often the single biggest latency cost on a
+  simple lookup question, independent of context size.
+- **`answer_num_ctx`** (default `8192`, vs. `llm.num_ctx: 16384`): every
+  request now always sends an explicit `num_ctx` (`adapters/llm_ollama.py`
+  logs the actual outgoing `options`/`keep_alive` at debug level) — Ollama
+  silently falls back to its own small built-in default when it's omitted,
+  and an oversized value burns KV-cache/generation time for no benefit on a
+  short Q&A prompt.
+- **`answer_top_k` / `answer_max_expanded`**: the answer path retrieves fewer
+  chunks than the general `retriever.top_k` and expands only the
+  best-ranked few to full source in the prompt (the rest get a path-only
+  reference line) — see `build_answer_messages()` in
+  `adapters/engine_langgraph.py`.
+- **`llm.keep_alive`** (default `30m`): sent on every request so Ollama keeps
+  the model loaded between turns instead of unloading it after its default
+  ~5 minute idle timeout and paying a full reload on the next question.
+  Server-side alternative (applies to every model, not just Forge's calls):
+  set the `OLLAMA_KEEP_ALIVE` environment variable before `ollama serve`,
+  e.g. `OLLAMA_KEEP_ALIVE=30m ollama serve`.
+- **`llm.show_timing`** (default `true`): prints a one-line
+  `[timing] retrieve 0.4s | prompt ~2100 tok | first-token 4.2s | total 22.1s | 9.3 tok/s`
+  summary after each Chainlit answer.
+
+### Benchmark script
+```
+python -m app.bench --model qwen3:4b --num-ctx 8192 --top-k 5
+python -m app.bench --model qwen3:8b --num-ctx 16384 --top-k 8
+```
+Runs a fixed question N times per `--model`/`--num-ctx`/`--top-k`
+combination (each flag is repeatable — pass a flag twice in one invocation
+to get a side-by-side comparison table) and reports median time-to-first-
+token, median total time, and tokens/second.
+
+### Vulkan on the Radeon 680M (measured — this is the setting that actually helped)
+The 680M can't use ROCm on Windows, but Ollama has experimental Vulkan
+support for AMD iGPUs. This is an environment-variable change to the Ollama
+server process, not a Forge config or code change — nothing in this repo
+depends on it.
+
+1. **Both env vars are required**, not just the one Ollama's docs lead with:
+   ```
+   OLLAMA_VULKAN=1
+   OLLAMA_IGPU_ENABLE=1
+   ```
+   `OLLAMA_VULKAN=1` alone enumerates the iGPU but then drops it — the
+   server log says so explicitly: `msg="dropping integrated GPU; to enable,
+   set OLLAMA_IGPU_ENABLE=1"`. Without the second variable, Ollama silently
+   falls back to CPU and everything below still applies unchanged.
+2. Set both, then restart Ollama. On Windows the desktop tray app
+   (`ollama app.exe`) needs the variables set as **persistent user
+   environment variables** (System Properties → Environment Variables, or
+   `setx OLLAMA_VULKAN 1` / `setx OLLAMA_IGPU_ENABLE 1` from a fresh
+   terminal — `setx` only affects shells opened after it runs) and the tray
+   app restarted; running `ollama serve` directly in a terminal that already
+   has both `$env:` variables set works immediately, for testing.
+3. Verify with `ollama ps` after a request: `PROCESSOR` should read `100%
+   GPU`, not `100% CPU`. If it still says CPU, `OLLAMA_IGPU_ENABLE` didn't
+   take — check the server startup log for the "dropping integrated GPU"
+   line above.
+4. Measured on this machine (`app/bench.py`, median of 3 runs, real
+   Q&A question, hybrid retriever context):
+
+   | Config | CPU only | Vulkan + iGPU enabled | Speedup |
+   |---|---|---|---|
+   | `qwen3:4b`, `num_ctx=8192`, `top_k=5` | 347.7s total, 1.6 tok/s | 146.2s total, 3.3 tok/s | ~2.4x |
+   | `qwen3:8b`, `num_ctx=16384`, `top_k=8` | 301.0s total, 1.3 tok/s | 213.8s total, 1.9 tok/s | ~1.4x |
+
+   A real gain, but not enough alone to hit a 20-40s target on this
+   hardware — an iGPU shares system memory bandwidth with the CPU, so it
+   isn't a discrete-GPU-sized win. Ollama's log also warned `AMD driver is
+   too old. Update your AMD driver to enable GPU inference` on this
+   machine — worth updating the AMD graphics driver to see if it unlocks
+   more headroom, independent of anything above.
+
+---
+
 ## Build roadmap
 
 | Phase | Layer | Status |
@@ -185,6 +272,7 @@ code-edit step.
 | 20 | Approval gate on `interrupt()` + checkpoint (survives a restart), `python -m app.resume` | done |
 | 21 | Conversation history in Chainlit (`/history`, resume/delete a thread) | done |
 | 22 | Hosted (OpenAI-compatible) LLM adapter for `llm`/`code_model` | done |
+| 23 | Q&A latency tuning (`answer_model`, per-path `num_ctx`, `keep_alive`, prompt trimming, `app/bench.py`) | done |
 
 We build one phase per step, each testable on its own before the next.
 

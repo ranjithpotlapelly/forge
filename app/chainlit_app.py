@@ -50,8 +50,8 @@ from adapters.engine_langgraph import build_answer_messages, classify_intent, de
 from app.config_loader import load_config
 from app.index import run_index
 from app.wiring import (
-    build_engine, build_fetch_issue_tool, build_llm, build_retriever,
-    build_run_history, build_tracing,
+    build_answer_model, build_engine, build_fetch_issue_tool, build_llm,
+    build_retriever, build_run_history, build_tracing,
 )
 from core.types import Chunk
 from product.approval import PlanDecision
@@ -61,6 +61,12 @@ _cfg = load_config()
 _tracing = build_tracing(_cfg)
 _tracing.start()
 _llm = build_llm(_cfg)
+# Phase 23 (perf tuning): the Q&A answer path below uses a separate, faster
+# model than _llm (which stays on config.yaml's llm.model -- qwen3:8b here --
+# for classify_intent and the task-flow graph). See config.yaml's
+# answer_model section and adapters/llm_ollama.py's num_ctx/keep_alive
+# handling for why this alone cuts answer latency independent of context size.
+_answer_llm = build_answer_model(_cfg)
 _retriever = build_retriever(_cfg)
 # The single source of truth for conversation history (Phase 21) -- not
 # core.store.StateStore, which Phase 16 originally used for a parallel
@@ -72,7 +78,11 @@ _run_history = build_run_history(_cfg)
 _engine = build_engine(_cfg, llm=_llm, retriever=_retriever)
 _fetch_issue_tool = build_fetch_issue_tool(_cfg)
 _repo_path = _cfg["forge"]["repo_path"]
-_top_k = _cfg["retriever"].get("top_k", 8)
+# Phase 23 (perf tuning): the Q&A path retrieves fewer, higher-ranked chunks
+# than the general top_k (faster prefill) and expands only the best few to
+# full source in the prompt -- see build_answer_messages's max_expanded param.
+_answer_top_k = _cfg["retriever"].get("answer_top_k", 5)
+_answer_max_expanded = _cfg["retriever"].get("answer_max_expanded", 4)
 _ISSUE_REF_RE = re.compile(r"#(\d+)")
 
 _LANGUAGE_BY_EXTENSION = {
@@ -125,12 +135,18 @@ def _citation_elements(chunks: list[Chunk]) -> list[cl.Text]:
         elements.append(cl.Text(name=f"{path}:{start}-{end}", content=source, language=_language_for(path), display="side"))
     return elements
 
-async def _stream_tokens(tokens: Iterable[str], msg: cl.Message) -> str:
+async def _stream_tokens(
+    tokens: Iterable[str], msg: cl.Message, on_first_token: Callable[[], None] | None = None,
+) -> str:
     """Bridges LLMClient.stream()'s blocking generator (it calls Ollama
     synchronously) onto Chainlit's async stream_token, one token at a time --
     asyncio.to_thread(list, tokens) would also get it off the event loop, but
     only returns once the whole generator is exhausted, which defeats the
-    point of streaming to the UI as tokens actually arrive."""
+    point of streaming to the UI as tokens actually arrive.
+
+    on_first_token (Phase 23, perf tuning), if given, fires once when the
+    first real token is dequeued -- lets the caller measure time-to-first-
+    token without threading its own clock through the producer thread."""
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -146,12 +162,17 @@ async def _stream_tokens(tokens: Iterable[str], msg: cl.Message) -> str:
     threading.Thread(target=_produce, daemon=True).start()
 
     parts: list[str] = []
+    first = True
     while True:
         item = await queue.get()
         if item is None:
             break
         if isinstance(item, BaseException):
             raise item
+        if first:
+            first = False
+            if on_first_token is not None:
+                on_first_token()
         parts.append(item)
         await msg.stream_token(item)
     return "".join(parts)
@@ -166,9 +187,10 @@ async def _handle_question(question: str, thread_id: str) -> None:
     t0 = time.monotonic()
     async with cl.Step(name="Retrieving...", type="retrieval") as step:
         step.input = question
-        chunks = await asyncio.to_thread(_retriever.search, question, _top_k)
+        chunks = await asyncio.to_thread(_retriever.search, question, _answer_top_k)
         step.output = f"{len(chunks)} chunk(s) found"
-    _run_history.record_step(run_id, "retrieve", "ok", json.dumps({"chunks": len(chunks)}), (time.monotonic() - t0) * 1000)
+    retrieve_s = time.monotonic() - t0
+    _run_history.record_step(run_id, "retrieve", "ok", json.dumps({"chunks": len(chunks)}), retrieve_s * 1000)
 
     if has_context({"chunks": chunks}) != "answer":
         canned = decline({})["answer"]
@@ -180,27 +202,48 @@ async def _handle_question(question: str, thread_id: str) -> None:
         await cl.Message(content=canned.text).send()
         return
 
-    messages = build_answer_messages(question, chunks)
+    messages = build_answer_messages(question, chunks, max_expanded=_answer_max_expanded)
+    # Rough chars/4 heuristic, not a real tokenizer call -- good enough for a
+    # one-line perf-tuning signal, not for anything that needs to be exact.
+    prompt_tokens_est = max(1, sum(len(m.content) for m in messages) // 4)
     msg = cl.Message(content="", elements=_citation_elements(chunks))
     t1 = time.monotonic()
+    ttft_holder: list[float] = []
+
+    def _mark_first_token() -> None:
+        ttft_holder.append(time.monotonic() - t1)
+
     try:
-        full_text = await _stream_tokens(_llm.stream(messages), msg)
+        full_text = await _stream_tokens(
+            _answer_llm.stream(
+                messages,
+                num_ctx=_cfg["llm"]["answer_num_ctx"],
+                keep_alive=_cfg["llm"]["keep_alive"],
+            ),
+            msg,
+            on_first_token=_mark_first_token,
+        )
     except Exception as e:  # noqa: BLE001 -- surfaced to the user, not a silent truncation
         _run_history.record_step(run_id, "answer", "error", str(e), (time.monotonic() - t1) * 1000)
         _run_history.finish_run(run_id, "failed", str(e))
         await cl.Message(content=f"Something went wrong while generating the answer: {e}").send()
         return
+    total_s = time.monotonic() - t1
     await msg.send()
     _run_history.record_step(
         run_id, "answer", "ok",
-        json.dumps({"answer": full_text, "citations": len(chunks)}), (time.monotonic() - t1) * 1000,
+        json.dumps({"answer": full_text, "citations": len(chunks)}), total_s * 1000,
     )
     _run_history.finish_run(run_id, "completed")
 
-    _store.put(
-        f"chat:{thread_id}:{int(time.time() * 1000)}",
-        {"question": question, "answer": full_text, "citations": len(chunks)},
-    )
+    if _cfg["llm"].get("show_timing", True):
+        ttft = ttft_holder[0] if ttft_holder else total_s
+        completion_tokens_est = max(1, len(full_text) // 4)
+        tok_s = completion_tokens_est / total_s if total_s > 0 else 0.0
+        print(
+            f"[timing] retrieve {retrieve_s:.1f}s | prompt ~{prompt_tokens_est} tok | "
+            f"first-token {ttft:.1f}s | total {total_s:.1f}s | {tok_s:.1f} tok/s"
+        )
 
 # --- /index (Phase 16) --------------------------------------------------------
 

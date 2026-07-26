@@ -13,6 +13,26 @@ llm:
   host: ${OLLAMA_HOST}         # from .env; falls back to http://localhost:11434
   temperature: 0.2
   num_ctx: 16384                # plan/edit/test loop needs target file + plan + test output in one prompt
+  # Phase 23 (perf tuning): per-path num_ctx, right-sized instead of one value
+  # maxed for everything. The answer path (app/chainlit_app.py) uses
+  # answer_num_ctx; edit_num_ctx is reserved for product/code_edit.py's calls
+  # -- not wired in yet, kept here so it's configured when it is.
+  answer_num_ctx: 8192          # Q&A rarely needs the full 16384
+  edit_num_ctx: 16384           # (future) code-edit loop needs the headroom
+  keep_alive: 30m                # sent on every Ollama request; without it, Ollama
+                                  # unloads an idle model (~5min default) and the next
+                                  # call pays a full reload. Alternative: set the
+                                  # OLLAMA_KEEP_ALIVE env var server-side (see README).
+  show_timing: true              # print a [timing] line after each Q&A answer
+
+# A separate, faster model for the Q&A answer path specifically -- qwen3:8b is
+# a thinking model (see adapters/llm_ollama.py's <think> stripping) and its
+# internal reasoning alone can be a large chunk of a "why is this so slow"
+# answer's latency, independent of num_ctx. llm.model stays qwen3:8b for
+# planning/task work; only app/chainlit_app.py's answer path uses this.
+answer_model:
+  adapter: ollama
+  model: qwen3:4b
 
 # The code-EDIT step (Phase 7) gets its own slot so patch quality can be upgraded
 # independently. Local by default; point this at a hosted endpoint when you're ready.
@@ -40,6 +60,12 @@ retriever:
   # Phase 15: fused in behind the same Retriever port by adapters/retriever_hybrid.py
   # -> adapters/retriever_fts.py (SQLite FTS5 over symbol/signature/path, for exact-identifier queries)
   lexical_path: ./.data/lexical.db
+  # Phase 23 (perf tuning): the Q&A answer path retrieves fewer, higher-ranked
+  # chunks than top_k (faster prefill), and expands only the best few to full
+  # source in the prompt -- the rest get a path-only reference line instead
+  # of their full body. See adapters/engine_langgraph.py:build_answer_messages.
+  answer_top_k: 5
+  answer_max_expanded: 4
 
 # --- Orchestration (Phase 4) ---
 engine:
