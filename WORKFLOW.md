@@ -9,18 +9,34 @@ For what changed since the original design plan and why, see
 
 ## 1. What Forge does
 
-Forge is a **self-hosted repo copilot**. From the chat UI, it indexes a
-codebase (structure-aware: one chunk per function/class) and answers deep
-questions about it, citing exact file and line numbers. It runs entirely on
-your own machine (Ollama), so private code never leaves it.
+Forge is a **self-hosted repo copilot**, and both of its paths are reachable
+from the same chat UI (Chainlit, `http://localhost:8010` when run via
+`scripts/run-stack.ps1`):
 
-Separately — wired and proven with real tests, but not yet reachable from
-the chat UI — it can propose a code edit with a dedicated model and write it
-to a sandboxed workspace, then commit and push that workspace's git history.
-Both paths are gated behind human approval.
+- **Q&A.** `/index <path>` indexes a repo (structure-aware: one chunk per
+  function/class). Ask a question about it and get an answer with exact
+  `path:line` citations.
+- **Task path.** Describe a change ("fix ...", "add ...", "refactor ...", or
+  mention a `#N` issue) and Forge classifies it as a task, proposes a plan,
+  and shows it as a card with **Approve / Edit / Reject** buttons
+  (`cl.AskActionMessage`, Phase 17). Approving runs edit → test (retry up to
+  3 times, feeding failures back to the model) → commit → push → a second
+  approval gate → `open_pr`.
 
-Think of it as a grounded Q&A assistant over your code, plus a separate,
-approval-gated toolkit for making changes.
+Both paths run entirely on your own machine (Ollama), so private code never
+leaves it, and every mutating step (`write_file`/`commit`/`push`/`open_pr`)
+is gated behind human approval — nothing in the task path executes without
+an explicit click.
+
+One operational catch worth knowing up front: `/index <path>` only widens
+what Q&A can retrieve. The task path always edits/tests/commits against
+`config.yaml`'s `forge.repo_path` (read once, at startup) — indexing a repo
+does not retarget what gets edited. If you want to edit a different repo
+than the one you last indexed, `repo_path` has to point there too, and it
+must already be a git repo.
+
+Think of it as a grounded Q&A assistant over your code, plus a chat-driven,
+approval-gated workflow for making changes to a separately-configured repo.
 
 ## 2. The mental model (this is the important part)
 
@@ -143,70 +159,75 @@ flowchart LR
     X --> O
 ```
 
-## 5. The other flow: code-edit, commit, push, open_pr
+## 5. The other flow: the task path (plan → edit → test → commit → push → PR)
 
-Four independent, approval-gated capabilities, each a plain Python function
-call — not graph nodes, no checkpointed pause/resume:
+Unlike Section 4's Q&A path, this **is** a full LangGraph flow (`adapters/engine_langgraph.py`,
+Phase 14/17/20) — every step below is a real graph node, and the two
+approval points are real `interrupt()` calls checkpointed to
+`.data/checkpoints.db`. Java analogy: a BPMN process with two user tasks,
+not a guard clause — the run genuinely pauses, survives a restart, and
+resumes from exactly where it left off (`/history` → Resume in the chat UI,
+or `python -m app.resume <thread_id>` from a fresh process).
 
-- `product/code_edit.py:edit_file()` — reads a file (ungated), asks
-  `code_model` (`llama3.2:1b`) for a full replacement, writes it via the
-  `write_file` MCP tool
-- `write_file`, `commit`, `push` — MCP tools on the same local server, each
-  checked against `requires_approval` before running
-- `open_pr` — not an MCP tool. `adapters/github_pr.py:OpenPrTool` implements
-  `core.tools.Tool` directly against the GitHub REST API, so it stays out of
-  the MCP server's stdio process (printing a diff there would corrupt the
-  JSON-RPC channel that process's stdout doubles as). Reads `GITHUB_TOKEN`
-  once, via `app/config_loader.py`'s `${GITHUB_TOKEN}` expansion —
-  `adapters/github_pr.py` never touches `os.environ` itself.
-
-The gate itself (`product/approval.py:run_tool`) is a synchronous callback:
-
-```python
-def run_tool(tool: Tool, kwargs: dict, approve: Approve) -> Any:
-    if tool.requires_approval and not approve(tool, kwargs):
-        raise ApprovalDenied(...)
-    return tool.run(**kwargs)
-```
-
-`approve` is supplied by the caller. Java analogy: a guard clause that
-raises `AccessDeniedException` if a passed-in `Supplier<Boolean>` returns
-false — not (yet) a BPMN user task, since nothing here persists across a
-restart.
+`classify_intent` routes a message here (rather than to `retrieve`) when it
+starts with a task verb (`fix`/`add`/`refactor`/`implement`/`rename`),
+mentions a `#N` issue, or an LLM call decides it's a task when neither regex
+matches.
 
 ```mermaid
-flowchart LR
-    I[Instruction + target file] --> RD[read_file<br/>ungated]
-    RD --> P[code_model.generate<br/>propose_edit]
-    P --> G{write_file<br/>approved?}
-    G -->|denied| D1[ApprovalDenied<br/>nothing written]
-    G -->|approved| W[write_file]
-    W --> G2{commit<br/>approved?}
-    G2 -->|denied| D2[ApprovalDenied<br/>no commit]
-    G2 -->|approved| C[commit]
-    C --> G3{push<br/>approved?}
-    G3 -->|denied| D3[ApprovalDenied<br/>nothing pushed]
-    G3 -->|approved| PU[push]
-    PU --> G4{open_pr<br/>approved?}
-    G4 -->|denied| D4[ApprovalDenied<br/>no PR, zero network calls]
-    G4 -->|approved| OP[open_pr:<br/>show diff + title/body,<br/>then POST /pulls]
+flowchart TD
+    CI[classify_intent] -->|task| PW[prepare_workspace<br/>clone repo_path into<br/>.data/workspace, new branch]
+    PW --> TR[task_retrieve<br/>whole files for the<br/>steps' target paths]
+    TR --> PL[plan<br/>plan_fn + llm: ProposedPR<br/>title/branch/steps]
+    PL --> AG{approval_gate<br/>interrupt}
+    AG -->|reject| REJ[rejected] --> END1[END]
+    AG -->|revise, feedback| PL
+    AG -->|approve| ED[edit<br/>splice symbol body attempt 1,<br/>whole-file rewrite on retry]
+    ED --> TE[test<br/>run_tests MCP tool]
+    TE -->|passed| CO[commit]
+    TE -->|failed, attempt < 3| BA[bump_attempt] --> ED
+    TE -->|failed, attempt = 3| GU[give_up<br/>roll back every edited file] --> END2[END]
+    CO --> PU[push]
+    PU -->|ok| PG{pr_gate<br/>interrupt: diff shown}
+    PU -->|failed| PF[push_failed] --> END3[END]
+    PG -->|approve| OP[open_pr] --> END4[END]
+    PG -->|reject| PR2[pr_rejected] --> END5[END]
 ```
 
-Both `commit` and `push` run against `.data/workspace/`, a sandboxed
-directory that `write_file`/`read_file` are also confined to (path-escape
-checked in `_resolve()`). `_ensure_git_repo()` initializes that sandbox as
-its own git repo on first use, with a local-only identity (`git config`
-without `--global` — never touches your real git identity).
+Notable behavior, some of it only visible once you've actually run a task:
 
-`open_pr` runs last, against that same workspace repo: it derives
-`owner/repo` from its `origin` remote, computes `git diff base...head`, and
-calls `self._display(...)` (defaults to `print`) with the title, body, and
-full diff before making any HTTP request — so the only thing standing
-between a human and an actual `POST /repos/{owner}/{repo}/pulls` is
-`run_tool`'s `approve()` check. Because `run_tool` never calls `tool.run()`
-when `approve()` returns `False`, a denied `open_pr` cannot reach the
-network — proven against a real local HTTP server (not mocked) in
-`app/open_pr_smoke_test.py`.
+- **`prepare_workspace` requires `forge.repo_path` to already be a clean git
+  repo** (no uncommitted changes) — it clones it into the sandbox and checks
+  out a fresh branch there. Edits never touch the source directly.
+- **`edit`'s retry (attempt > 1) always does a whole-file rewrite**, not a
+  re-splice at the original symbol's line numbers — those go stale the
+  moment attempt 1 changes the file. Small local models can introduce
+  subtle regressions here (e.g. dropping punctuation from CSS selectors)
+  that a narrow test suite won't catch — review whole-file-rewrite diffs,
+  don't trust "tests passed" alone.
+- **`test` feeds the previous failure's output back into the next edit
+  attempt's instruction**, so retries are informed, not blind repeats.
+- **`give_up` restores every file it touched to its pre-edit content**
+  before ending the run — a failed task leaves the repo exactly as it found
+  it.
+- `write_file`/`commit`/`push` are MCP tools on the local filesystem+git
+  server (`adapters/mcp_servers/workspace_server.py`), each still checked
+  against `requires_approval` via `product/approval.py:run_tool` — but by
+  the time `commit_node`/`push_node` call them, the plan-level approval
+  already covers the decision, so they pass an always-`True` callback
+  rather than opening a second, redundant prompt per tool call.
+- **`open_pr` is not an MCP tool.** `adapters/github_pr.py:OpenPrTool`
+  implements `core.tools.Tool` directly against the GitHub REST API, kept
+  out of the MCP server's stdio process (printing a diff there would
+  corrupt the JSON-RPC channel that process's stdout doubles as). It
+  derives `owner/repo` from the sandbox's `origin` remote, shows the title,
+  body, and full `git diff base...head` at the `pr_gate` interrupt, and
+  only calls `POST /repos/{owner}/{repo}/pulls` if that's approved.
+- **Push can fail for a reason unrelated to the graph**: if `repo_path`'s
+  host directory is bind-mounted read-only (`docker-compose.yml`'s
+  `:ro` on `/mnt/host_projects`), the sandbox can commit fine but can't
+  push back into it — `push_failed` ends the run with the git error, and
+  nothing downstream (`pr_gate`/`open_pr`) runs.
 
 ## 6. Where data lives
 
@@ -324,66 +345,52 @@ is a config change, not a rewrite. Same principle, applied to every layer.
 **A. Start it up**
 
 ```
-ollama serve                              # if not already running
-docker compose up -d phoenix              # tracing UI: http://localhost:6006
-python -m app.run_chainlit run app/chainlit_app.py -w --port 8501
+powershell -File scripts\run-stack.ps1
 ```
 
-Not `chainlit run` directly, and not a native `phoenix serve` — see
-`README.md` for why.
+Run from the repo root. This is a Docker Compose stack, not a native
+`chainlit run`/`phoenix serve` — see `README.md` for why. It brings up, in
+order: Ollama (native host process — starts it if not already running),
+Phoenix (`http://localhost:6006`), then Forge itself (`http://localhost:8010`),
+verifying each is actually reachable before starting the next.
 
 **B. Index a codebase**
 
-There is no `/index` chat command yet. Indexing is a script, run once:
+Type in the chat:
 
 ```
-python -m app.ingest_smoke_test
+/index <path>
 ```
 
-This walks `forge.repo_path` from `config.yaml` (currently `.`, meaning
-Forge indexes itself), chunks `.py` files per top-level function/class, and
-writes them into the same Chroma collection the chat UI queries.
+`<path>` must be reachable *inside the Forge container* — if it's an
+in-repo path this is trivial (e.g. `/index .`), but a path outside the
+container needs a bind mount added to `docker-compose.yml`'s `forge`
+service first (`- C:/some/host/path:/mnt/host_projects:ro`), then
+`/index /mnt/host_projects/...`. This walks the path, chunks `.py`/`.js`/
+`.ts`/`.go` files per top-level function/class (whole-file for non-Python —
+no per-symbol chunker exists for those languages), and writes them into
+Chroma. **This only affects Q&A** — see the callout in Section 1 about why
+it doesn't retarget the task path.
 
 **C. Ask a question about the code**
 
-Open `http://localhost:8501`, type a question. The full answer appears at
-once with a **Sources** list of `path:line` citations underneath.
+Open `http://localhost:8010`, type a question. The answer streams in with
+expandable citation chips underneath.
 
 **D. Propose an edit, commit, push, open a PR**
 
-Not reachable from the chat UI yet — call the workflow functions directly:
+Type a change request in the same chat, e.g. `Add a logout button to
+shell.component.ts` — lead with a verb (`fix`/`add`/`refactor`/`implement`/
+`rename`) so it's classified as a task deterministically rather than by an
+LLM guess. Forge clones `forge.repo_path` into a sandboxed workspace on a
+fresh branch, shows a plan card, and pauses for **Approve / Edit / Reject**.
+Approving runs edit → test (up to 3 attempts, each retry given the previous
+failure's output) → commit → push → a second approval gate before `open_pr`.
 
-```python
-from app.config_loader import load_config
-from app.wiring import build_code_model, build_tools
-from product.code_edit import edit_file
-
-cfg = load_config()
-code_model = build_code_model(cfg)
-tools = {t.name: t for t in build_tools(cfg)}
-
-edit_file(
-    code_model, tools["read_file"], tools["write_file"],
-    path="some_file.py", instruction="...",
-    approve=lambda tool, args: True,   # your own approval logic goes here
-)
-```
-
-`commit`/`push`/`open_pr` all follow the same `run_tool(tool, kwargs, approve)`
-pattern:
-
-```python
-from product.approval import run_tool
-
-run_tool(
-    tools["open_pr"],
-    {"title": "...", "body": "...", "base": "main", "head": "forge/task-..."},
-    approve=lambda tool, kwargs: True,   # your own approval logic goes here
-)
-```
-
-`open_pr.run()` prints the title, body, and full `git diff base...head`
-before it ever calls the GitHub API, and returns the created PR's URL.
+If a run gets stuck at an approval gate in a dead/reconnecting browser tab
+(the plan state is checkpointed server-side, independent of any one
+session), recover it with `/history` → find the thread → **Resume**, or
+from a fresh process entirely with `python -m app.resume <thread_id>`.
 
 **E. Check what actually happened**
 
@@ -395,10 +402,12 @@ any errors.
 
 | Situation | What to change |
 |---|---|
-| Too slow while testing ideas | `llm.model: llama3.2:1b` in `config.yaml` (or whatever small model you have pulled) |
-| UI loads but nothing responds | Ollama not running → `ollama serve`; or wrong model name in config vs. `ollama list` |
-| Phoenix spans missing | Container not running → `docker compose up -d phoenix` |
-| Approval gate errors immediately | The `approve` callback you passed isn't returning `True` |
+| Too slow while testing ideas | `llm.model` in `config.yaml` — use the smallest model you have pulled |
+| UI loads but nothing responds | Ollama not running → check `docker logs forge-forge-1`; or wrong model name in config vs. `ollama list` |
+| Phoenix spans missing | Container not running → re-run `scripts\run-stack.ps1` |
+| "Retrieving..."/a plan never resolves | Check `docker stats forge-forge-1` — near-idle CPU with no new log lines means the message never reached the backend (dead browser session), not a slow model. Refresh and resend |
+| `push`/`open_pr` fails with a git object-directory error | `forge.repo_path`'s host directory is bind-mounted read-only (`:ro`) — Forge's sandbox clone can commit fine, but can't push back into a read-only source. Either make the mount read-write, or treat push as a manual step done outside Forge once tests pass |
+| A JS/TS `run_tests` step needs a browser | The image installs `nodejs`/`npm`/`chromium` and sets `CHROME_BIN`; a project's own `npm test` still needs its own karma/jasmine (or equivalent) config and devDependencies — Forge doesn't scaffold those for you |
 
 ## 12. Recommendations
 
