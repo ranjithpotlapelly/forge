@@ -92,10 +92,10 @@ one-file change, never touched `core/` or `product/`.
 | Layer | Job | Tool | Java analogy |
 |---|---|---|---|
 | Interface | chat with the user | Chainlit | Your web tier (JSF/Thymeleaf/React front end) |
-| Orchestration | decide route vs. decline | LangGraph (3-node graph) | A workflow/state machine engine (Camunda, Spring State Machine) |
-| Knowledge | find relevant code | Chroma + raw Ollama embeddings | A vector index over your data |
-| Reasoning | generate text/decisions | Ollama + Llama 3 family | A remote service you call — but non-deterministic |
-| Action | do things in the world | MCP (official SDK), one local filesystem+git server | `@Service` beans exposed through a standard driver interface |
+| Orchestration | classify intent, then Q&A retrieval or the full task pipeline | LangGraph (~19 nodes: `classify_intent`/`retrieve`/`answer`/`decline` plus the whole task path — Section 5) | A workflow/state machine engine (Camunda, Spring State Machine) |
+| Knowledge | find relevant code | Chroma + raw Ollama embeddings, optional SQLite FTS5 lexical fusion | A vector index over your data |
+| Reasoning | generate text/decisions | Ollama + Qwen3 family (`llm`/`answer_model`/`code_model`, separately sized per use), or a hosted OpenAI-compatible API (Phase 22, config-only swap) | A remote service you call — but non-deterministic |
+| Action | do things in the world | MCP (official SDK), one local filesystem+git server, plus a direct GitHub REST adapter for `open_pr`/`fetch_issue` | `@Service` beans exposed through a standard driver interface |
 | State | remember across turns | SQLite (two separate files) | H2 embedded DB + HTTP session persistence |
 | Observability | record what happened | Phoenix (Docker container) | Zipkin/Jaeger distributed tracing |
 | Deployment | package and ship | Docker (`uv`-based build) | Same as you already know |
@@ -106,57 +106,89 @@ A user types in the Chainlit UI:
 
 > "Where is the workspace sandbox path-escape check?"
 
+**This path deliberately bypasses `core.engine.Engine.ask()`/the compiled
+LangGraph** — a decision explained right in `app/chainlit_app.py`'s module
+docstring: `Engine.ask()` only returns a finished (non-streamed) `Answer`,
+and it always re-runs `classify_intent` internally, which
+`chainlit_app.py` has already done itself by this point. Instead it calls
+the same lower-level building blocks `Engine.ask()`'s Q&A branch uses
+directly — `Retriever.search`, `has_context`/`decline`/
+`build_answer_messages`, `LLMClient.stream` — so the logic isn't
+duplicated, just not routed through the graph. (Contrast with Section 5's
+task path, which *does* go through the real engine unchanged — reusing
+`run_task()`'s plan/edit/test/retry/commit/push/PR machinery was the whole
+point there; only *who answers its approval callbacks* is new.)
+
 **Step 1 — Interface (Chainlit).** `@cl.on_chat_start` assigns the browser
-session a UUID `thread_id`; `@cl.on_message` runs `engine.ask()` off the
-event loop via `asyncio.to_thread` (Ollama calls block, and must not block
-Chainlit's async server). Java: a `@PostMapping` controller receiving a
-request with a session ID, delegating the blocking call to a worker thread.
+session a UUID `thread_id`. `@cl.on_message` calls `classify_intent` first;
+for a question, it awaits `_handle_question(question, thread_id)`, which
+runs the retrieval/LLM calls via `asyncio.to_thread` (they block, and must
+not block Chainlit's async server). Java: a `@PostMapping` controller
+delegating a blocking call to a worker thread — but note there's no single
+`ask()` call being delegated to; the controller method *is* the orchestration
+here.
 
-**Step 2 — Orchestration entry (LangGraph).** The compiled graph is invoked
-with `{"question": ...}` and `config={"configurable": {"thread_id": ...}}`.
-The `SqliteSaver` checkpointer (`.data/checkpoints.db`) loads or creates
-state for that thread. Java: a process instance rehydrated from the DB,
-carrying a context object.
+**Step 2 — Knowledge (retrieval).** `_retriever.search(question,
+answer_top_k)` — a smaller `k` (`config.yaml`'s `retriever.answer_top_k`,
+default 5) than the task path's general `top_k`, a Phase 23 latency choice.
+The question is embedded via `nomic-embed-text` and compared against
+Chroma's stored vectors of `{path, symbol, start_line, end_line}` per
+chunk — semantic search only. Java: a Lucene index, but matching on meaning
+rather than keywords. This step is manually traced (`retriever.search`,
+`adapters/retriever_chroma.py`) independent of the graph, so it still
+produces a Phoenix span even though nothing here goes through LangGraph.
 
-**Step 3 — retrieve node.** Always runs first. Calls
-`retriever.search(question, k=8)`.
+**Step 3 — has_context decision.** A plain Python function
+(`adapters/engine_langgraph.py:has_context`), not a model call: if the top
+hit's score is `>= MIN_RELEVANCE` (0.2), continue to the answer step;
+otherwise call `decline({})` for the canned message and stop. Unlike
+Section 5's `approval_gate`, this is just a function call here, not a graph
+conditional edge — there's no graph in this path to branch inside.
 
-**Step 4 — Knowledge (retrieval).** The question is embedded via
-`nomic-embed-text` and compared against Chroma's stored vectors of
-`{path, symbol, start_line, end_line}` per chunk — semantic search only.
-Java: a Lucene index, but matching on meaning rather than keywords.
+**Step 4 — Reasoning (answer).** `build_answer_messages(question, chunks,
+max_expanded=answer_max_expanded)` builds the prompt (only the top few
+chunks — `retriever.answer_max_expanded`, default 4 — get expanded to full
+source text; the rest are referenced by location only, another Phase 23
+latency trade). It's sent to `_answer_llm.stream(...)` — **not** the main
+`llm` (`config.yaml`'s `answer_model` section, a smaller/faster model than
+`llm.model`, wired separately in `chainlit_app.py` specifically so Q&A
+answers don't pay the bigger model's latency) — with `answer_num_ctx` and
+`keep_alive` from `config.yaml`. Tokens stream to the browser one at a time
+via `cl.Message.stream_token()` as they arrive, not as one blocking call.
+Java: closer to a `Flux<String>`/SSE response than a synchronous method
+return.
 
-**Step 5 — has_context decision.** A plain Python function
-(`adapters/engine_langgraph.py:has_context`), not a model call: if the top hit's score
-is `>= MIN_RELEVANCE` (0.2), route to `answer`; otherwise route to
-`decline`. This is a real branch in the compiled `StateGraph`
-(`add_conditional_edges`), so it shows up as its own span in Phoenix.
+**Step 5 — State.** No LangGraph checkpoint is written for this path (there's
+no graph invocation to checkpoint) — instead, `_run_history.record_step()`
+is called explicitly for each stage (`retrieve`, then `decline` or
+`answer`), writing to the same `runs`/`run_steps` tables
+(`core.run_history.RunHistory`) every graph node writes to automatically via
+`_instrumented()`. This is what lets `/history` replay a Q&A transcript
+later — the audit trail is unified even though the execution path isn't.
 
-**Step 6 — answer node.** Question + retrieved chunks + a system prompt go
-to `llm.generate()` (`llama3:latest`), which returns the full answer. Java:
-a synchronous call returning the whole response body.
+**Step 6 — Observability.** `retriever.search` and `llm.stream` each still
+emit their own manually-instrumented span (defined in the adapters
+themselves, independent of the graph) — but there's no `engine.ask`/
+`retrieve`/`answer` parent span wrapping them the way Section 5's graph
+nodes get one automatically, since nothing here calls into LangGraph.
+Expect to see the leaf spans in Phoenix, not a full nested trace tree, for
+this specific path.
 
-**Step 7 — State.** The turn is checkpointed to `.data/checkpoints.db`
-automatically as part of the graph's `invoke()` call. Java: `@Transactional`
-commit plus session persistence.
-
-**Step 8 — Observability.** Every step above emitted a span (`engine.ask`,
-`retrieve`, `has_context`, `answer`, `llm.generate`, `retriever.search`,
-`retriever.embed`) via manual OpenTelemetry spans plus LangGraph's own
-auto-instrumented node spans, both landing in the same Phoenix trace tree.
-Java: exactly a Zipkin trace with nested spans.
-
-**Step 9 — Interface renders** the answer with a **Sources** list like
-`math_utils.py:1`.
+**Step 7 — Interface renders** the streamed answer with expandable citation
+chips underneath (`cl.Message(elements=_citation_elements(chunks))`), and
+`config.yaml`'s `llm.show_timing` prints a one-line latency breakdown
+(retrieve time, estimated prompt tokens, time-to-first-token, total,
+tokens/sec) to the server console for tuning.
 
 ```mermaid
 flowchart LR
-    U[User question] --> R[retrieve node]
+    U[User question] --> CI[classify_intent<br/>chainlit_app.py, direct call]
+    CI -->|question| R[_retriever.search<br/>k = answer_top_k]
     R --> D{has_context?<br/>score >= 0.2}
-    D -->|yes| A[answer node<br/>llm.generate + citations]
-    D -->|no| X[decline node<br/>canned message]
-    A --> O[Answer shown in chat]
-    X --> O
+    D -->|no| X[decline<br/>canned message] --> O
+    D -->|yes| M[build_answer_messages<br/>top few chunks expanded]
+    M --> A[_answer_llm.stream<br/>answer_model, streamed]
+    A --> O[Tokens streamed to chat<br/>+ citation chips]
 ```
 
 ## 5. The other flow: the task path (plan → edit → test → commit → push → PR)
@@ -234,7 +266,7 @@ Notable behavior, some of it only visible once you've actually run a task:
 | Store | Holds | Java analogy |
 |---|---|---|
 | ChromaDB (`.data/chroma`) | vectors of code chunks + file/line metadata | Lucene index directory |
-| SQLite (`.data/forge.db`) | generic `StateStore` key-value table (chat history is written here, one row per Q&A turn) | A generic `Map<String,Object>` table |
+| SQLite (`.data/forge.db`) | `run_history`'s `runs`/`run_steps` tables (Phase 19) — the audit trail behind `/history`, `python -m app.history`, and every graph node's automatic step logging. The generic `StateStore` key-value table also lives here (`core/store.py`, Phase 5) but its one prior real use — a parallel `chat:{thread_id}:{ts}` log — was removed in Phase 21 in favor of `run_history` alone, so it's currently unused by the live app. | A generic `Map<String,Object>` table (mostly dormant; the audit-log table next to it is what's actually load-bearing) |
 | SQLite (`.data/checkpoints.db`) | LangGraph's own checkpointed graph state, per `thread_id` — a separate file from `forge.db` | Process instance persistence |
 | `.data/workspace/` (+ its own `.git/`) | the sandbox `write_file`/`commit`/`push` operate on | A scratch checkout, not your real repo |
 | Your Git repo | the actual Forge source code | The system of record |
@@ -278,7 +310,7 @@ at most, one new adapter file.
 
 | Layer | Baseline (free) | Upgrade | Trigger |
 |---|---|---|---|
-| Reasoning | Ollama, local CPU | Hosted model API | Speed/quality — do this first |
+| Reasoning | Ollama, local CPU | Hosted, OpenAI-compatible API (Phase 22, `adapters/llm_openai_compatible.py`) — **already applied to `code_model`** in `config.yaml` today (`adapter: openai_compatible`, an OpenRouter fallback chain); `llm`/`answer_model` are still on Ollama and can be swapped the same way | Speed/quality — this one's done, per-port |
 | Retrieval | ChromaDB embedded | Qdrant (on-disk + quantized) | Past ~200-300k chunks |
 | State | SQLite | PostgreSQL | Concurrent users |
 | Observability | Phoenix (Docker, local) | Hosted Phoenix/tracing | Team needs shared access |
@@ -313,11 +345,19 @@ is a config change, not a rewrite. Same principle, applied to every layer.
 - **MCP (Model Context Protocol)** — a standard protocol for exposing tools
   to agents. JDBC, but for tools.
 - **Checkpointer** — persists graph state after each step so a run can
-  resume. Process instance persistence. Only covers the Q&A graph — the
-  approval-gated tool calls are not checkpointed.
+  resume. Process instance persistence. Covers the whole task-path graph
+  (Section 5), including both `interrupt()` approval gates — a task paused
+  mid-approval survives a restart. The live Q&A path (Section 4) bypasses
+  the graph entirely by design, so there's nothing there to checkpoint;
+  `run_history` covers its audit trail instead.
 - **Human-in-the-loop / approval gate** — the run pauses and waits for a
-  person before a mutating action. Today: a synchronous callback checked
-  before a tool runs.
+  person before a mutating action. In the task path: a real
+  `langgraph.types.interrupt()` call, checkpointed, resumable from a
+  different process (`/history` → Resume, or `python -m app.resume`). Tool
+  calls underneath (`write_file`/`commit`/`push`/`open_pr`) additionally go
+  through `product/approval.py:run_tool`'s synchronous `requires_approval`
+  check, but by the time the task graph calls them the plan-level approval
+  already covers the decision.
 - **Hallucination** — the model states something false with confidence. The
   countermeasure is grounding (RAG) plus citations you can verify.
 - **Temperature** — randomness. Low (0.0-0.3) for code and decisions; higher
@@ -413,21 +453,24 @@ any errors.
 
 In priority order:
 
-1. **Move the approval gate onto LangGraph's `interrupt()`.** Today a denied
-   approval just raises, and a pending approval only survives as long as the
-   Chainlit session driving it (`_ask_plan_decision`/`_ask_pr_decision`
-   block a background thread on `AskActionMessage`) — "close the tab, resume
-   the same paused task tomorrow" isn't possible yet, even though the
-   checkpointer needed for it already exists (Phase 5) and every task-graph
-   node is checkpointed today.
-2. **Enforce a context-token budget explicitly** before calling
-   `llm.generate()` — nothing currently checks this.
-3. **Keep `WORKFLOW.md` current, not a PDF.** Update Section 7's status
-   table the same way `README.md`'s roadmap table gets updated, one phase at
-   a time.
+1. **Enforce a context-token budget explicitly** before calling
+   `llm`/`answer_model`/`code_model`'s `generate()`/`stream()` — nothing
+   currently checks this. `llm.answer_num_ctx`/`edit_num_ctx` (Phase 23)
+   right-size the *context window per path*, which is a different thing
+   from validating or truncating a specific outgoing prompt against a
+   budget before it's sent.
+2. **Keep `WORKFLOW.md` current, not a PDF.** This document itself is the
+   ongoing proof of how fast that drifts without deliberate effort — update
+   it the same way `README.md`'s roadmap table gets updated, one phase (or
+   one architectural change) at a time, not just at phase boundaries.
 
-Resolved since these were last written: the Chainlit approval gate (Phase
-17, `cl.AskActionMessage` Approve/Edit/Reject), `ProposedPR`/`PlanStep` (now
-constructed by `product/planning.py` and rendered as the plan card), the
-edit/test retry loop (Phase 14, capped at 3 attempts), and a lexical
-pre-filter for retrieval (Phase 15, SQLite FTS5 + RRF fusion).
+Resolved since earlier versions of this document: the Chainlit approval
+gate (Phase 17, `cl.AskActionMessage` Approve/Edit/Reject);
+`ProposedPR`/`PlanStep` (now constructed by `product/planning.py` and
+rendered as the plan card); the edit/test retry loop (Phase 14, capped at 3
+attempts); a lexical pre-filter for retrieval (Phase 15, SQLite FTS5 + RRF
+fusion); and — the last item on this list for a long time — **moving the
+approval gate onto LangGraph's `interrupt()`** (Phase 20): a denied approval
+no longer just raises, and a pending approval survives a restart and a dead
+browser session, resumable via `/history` → Resume or
+`python -m app.resume <thread_id>` — see Section 5.
