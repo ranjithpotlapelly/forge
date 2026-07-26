@@ -21,13 +21,19 @@ Leave this running. Ollama listens on http://localhost:11434.
 
 ### 2. Pull the models
 ```
-ollama pull qwen3:8b            # primary reasoning model (~5 GB)
-ollama pull qwen3:4b            # faster model for dev iteration (~2.5 GB)
-ollama pull qwen3-coder         # for the code-edit step (Phase 7)
+ollama pull qwen3:8b            # primary reasoning model (`llm`) (~5 GB)
+ollama pull qwen3:4b            # faster model for the Q&A path (`answer_model`) (~2.5 GB)
 ollama pull nomic-embed-text    # embeddings for RAG (light)
 ```
-Tip: while developing, set `llm.model: qwen3:4b` in `config.yaml` for ~2-3x
-faster turns; switch back to `qwen3:8b` to check final answer quality.
+`qwen3:4b` isn't just "for dev iteration" — `config.yaml`'s `answer_model`
+section uses it for every live Q&A answer by default (Phase 23), separately
+from `llm` (`qwen3:8b`, used for planning/task classification). Both are
+pulled up front for that reason, not as an either/or choice.
+
+Skip `qwen3-coder` — `code_model` (the code-edit step) defaults to a hosted,
+OpenAI-compatible endpoint in the checked-in `config.yaml`, not local Ollama.
+Only pull `qwen3-coder` if you revert `code_model` back to `adapter: ollama`
+(see "Upgrade path" below).
 
 ### 3. Python environment
 Requires Python 3.11+.
@@ -41,7 +47,17 @@ pip install -r requirements.txt
 ```
 copy .env.template .env
 ```
-Leave `GITHUB_TOKEN` blank for now — it's only needed in Phase 7.
+Leave `GITHUB_TOKEN` blank for now — it's needed for `open_pr`/`fetch_issue`
+(Phase 13/18), not for indexing or Q&A.
+
+`CODE_MODEL_NAME`/`CODE_MODEL_FALLBACK_1`/`CODE_MODEL_FALLBACK_2`/
+`CODE_MODEL_BASE_URL`/`CODE_MODEL_API_KEY` are a different matter: unlike
+everything else in this file, they're **not optional-to-leave-blank**.
+`config.yaml`'s checked-in `code_model:` block already points at a hosted,
+OpenAI-compatible endpoint (`adapter: openai_compatible`) rather than local
+Ollama — see the Upgrade path section below — so the code-edit step of the
+task path won't work until these are filled in with real values. `llm`,
+`answer_model`, and `embeddings` all stay local/free regardless.
 
 ### 5. Verify the scaffold (Phase 1)
 ```
@@ -49,47 +65,40 @@ python -m app.smoke_test
 ```
 This checks that config loads, Ollama is reachable, and your models are present.
 
-### 6. Start Phoenix (Phase 6, tracing)
+### 6. Start everything
 ```
-docker compose up -d phoenix
+powershell -File scripts\run-stack.ps1
 ```
-The native `arize-phoenix` pip package needs a C++ toolchain to build one of
-its dependencies (`sqlean-py`, no prebuilt wheels) — not a given on every
-CPU-only Windows box, so Phoenix runs as a container instead. The rest of
-Forge still runs natively. UI: http://localhost:6006.
+Run from the repo root. This is the current, single entry point — it brings
+up Ollama (native host process; starts `ollama serve` if it isn't already
+running), Phoenix (Docker container, tracing UI: http://localhost:6006), and
+Forge itself (Docker container, chat UI: http://localhost:8010), verifying
+each is actually reachable before starting the next. It also tears down and
+recreates the stack cleanly on every run (`docker compose down` first), and
+kills orphaned `llama-server.exe` processes Ollama itself has lost track of.
 
-### 7. Chat UI (Phase 8)
-```
-python -m app.run_chainlit run app/chainlit_app.py -w --port 8501
-```
-Use this instead of `chainlit run` directly. Chainlit's CLI unconditionally
-calls `nest_asyncio.apply()` at import time, which breaks anyio's event-loop
-detection on this Python version — static assets (JS/CSS/favicon) come back
-503/500 and the page loads blank. `app/run_chainlit.py` neutralizes that patch
-before Chainlit's CLI module loads. UI: http://localhost:8501.
+Two things worth knowing about *why* it's built this way, not just *how* to
+run it:
 
-Chainlit's real default port is 8000, but on this machine that's already
-taken by an unrelated project's container — pass `--port` explicitly to
-avoid it (or drop the flag if 8000 is free on yours).
-
-### 8. Full stack in Docker (Phase 9)
-```
-docker compose up -d --build
-```
-Builds and runs Forge itself alongside Phoenix. Ollama still runs natively —
-the container reaches it via `host.docker.internal` (set in
-docker-compose.yml). UI: http://localhost:8010 (8000 is taken on this
-machine — see above).
+- **Phoenix is a container, not a native process.** The native
+  `arize-phoenix` pip package needs a C++ toolchain to build one of its
+  dependencies (`sqlean-py`, no prebuilt wheels) — not a given on every
+  CPU-only Windows box.
+- **Forge itself is a container too (Phase 9), not `python -m
+  app.run_chainlit`.** An earlier version of this doc had you run Chainlit
+  natively on port 8501 with a `nest_asyncio` workaround — that's gone.
+  Everything now runs in Docker on port **8010** (not Chainlit's real
+  default, 8000 — already taken by an unrelated project's container on this
+  machine; change it in `docker-compose.yml` if 8000 is free on yours).
+  `app/run_chainlit.py` still exists and still works for running Chainlit
+  natively if you want to debug outside Docker, but it's no longer the
+  documented path.
 
 `.data/` (Chroma index, SQLite store/checkpoints, MCP workspace) lives in a
 **named volume** (`forge_data`), not a bind mount — SQLite's file locking
 doesn't work reliably over Docker Desktop's Windows bind-mount filesystem
 translation and the container crashed on startup (`disk I/O error`) until
-this was switched. Tradeoff: it's not directly browsable from Windows, and
-it's a separate store from your native `.data/` — indexing done natively
-doesn't show up in the container and vice versa. To index the same test
-docs into the container's own volume: `docker compose exec forge python -m
-app.retriever_smoke_test`.
+this was switched. Tradeoff: it's not directly browsable from Windows.
 
 The Dockerfile builds with `uv`, not `pip` — `pip install -r requirements.txt`
 was timing out against a flaky PyPI connection during this build; `uv` is
@@ -98,7 +107,26 @@ faster and retries more robustly. `requirements.txt` was also trimmed of
 Ollama embeddings, never used) and the full `arize-phoenix` package (Phase 6
 already replaced it with `arize-phoenix-otel` — the full package still needs
 a C++ toolchain to build `sqlean-py`, same blocker as Phase 6, just on Linux
-instead of Windows).
+instead of Windows). It also installs `nodejs`/`npm`/`chromium` (with
+`CHROME_BIN` set) so the task path's `run_tests` tool can run a JS/TS
+project's own `npm test` inside the sandbox, alongside the Maven/Gradle/
+pytest support it already had.
+
+### 7. Index a codebase and ask a question
+
+Type in the chat, once Forge is running:
+```
+/index <path>
+```
+`<path>` must be reachable *inside the container* — an in-repo path (e.g.
+`/index .`) works as-is; a path outside the repo needs a bind mount added to
+`docker-compose.yml`'s `forge` service first (`- C:/some/host/path:/mnt/
+host_projects:ro`), then `/index /mnt/host_projects/...`. Then just ask a
+question — the answer streams in with expandable citation chips underneath.
+
+See [WORKFLOW.md](WORKFLOW.md) Section 11 for the full walkthrough,
+including how to trigger the plan/edit/test/commit/push/PR task path from
+the same chat.
 
 ---
 
@@ -118,7 +146,7 @@ shared pieces are promoted into `core/` — no rewrite.
 
 ---
 
-## Upgrade path: pointing code_model at a hosted API (Phase 22)
+## Upgrade path: code_model already points at a hosted API (Phase 22)
 
 Local CPU inference caps answer and patch quality, and the code-edit step
 (`code_model`) feels it most — it's the smallest, fastest local model, since
@@ -127,30 +155,45 @@ implements the same `core.llm.LLMClient` port `adapters/llm_ollama.py` does,
 so swapping one for the other is a `config.yaml` edit — nothing in `core/`,
 `product/`, or anywhere else a model is consumed changes.
 
-To move **only** the code-edit step to a hosted, OpenAI-compatible endpoint
-(OpenAI itself, or any provider that mirrors its `/chat/completions` shape)
-and keep `llm` (the primary reasoning model) and `embeddings` local and free:
+**This isn't a hypothetical you still need to set up — `config.yaml`'s
+checked-in `code_model:` block already uses it:**
 
-1. Add your key to `.env` (already reserved there, blank by default):
-   ```
-   CODE_MODEL_API_KEY=sk-...
-   CODE_MODEL_BASE_URL=https://api.openai.com/v1
-   ```
-2. In `config.yaml`, change **only** the `code_model:` block:
-   ```yaml
-   code_model:
-     adapter: openai_compatible
-     model: gpt-4o-mini
-     base_url: ${CODE_MODEL_BASE_URL}
-     api_key: ${CODE_MODEL_API_KEY}
-   ```
-3. Leave `llm:` and `embeddings:` exactly as they are. Nothing else changes —
-   `product/code_edit.py` calls `code_model.generate()`/`.propose_edit()` the
-   same way regardless of which adapter is behind it.
+```yaml
+code_model:
+  adapter: openai_compatible
+  models:
+    - ${CODE_MODEL_NAME}
+    - ${CODE_MODEL_FALLBACK_1}
+    - ${CODE_MODEL_FALLBACK_2}
+  base_url: ${CODE_MODEL_BASE_URL}
+  api_key: ${CODE_MODEL_API_KEY}
+```
 
-The same adapter works for `llm:` too (any slot typed `core.llm.LLMClient`),
-if you'd rather upgrade reasoning quality instead of (or as well as) the
-code-edit step.
+`models:` (a list, not a single `model:` string) is a server-side fallback
+chain, sized for a provider like OpenRouter: `adapters/llm_openai_compatible.py`
+tries `CODE_MODEL_NAME` first, then `FALLBACK_1`, then `FALLBACK_2`, moving
+to the next on a rate limit, moderation block, downtime, or any other error
+— no client-side retry logic needed. `app/wiring.py` drops blank entries
+before building the list, so you can leave `FALLBACK_1`/`FALLBACK_2` empty
+if you don't want fallbacks and just fill in `CODE_MODEL_NAME`.
+
+To make this actually work, fill in `.env` (see Step 4 above):
+```
+CODE_MODEL_API_KEY=sk-or-v1-...
+CODE_MODEL_BASE_URL=https://openrouter.ai/api/v1
+CODE_MODEL_NAME=<a model slug your provider serves>
+CODE_MODEL_FALLBACK_1=
+CODE_MODEL_FALLBACK_2=
+```
+(Substitute any provider that mirrors the OpenAI `/chat/completions` shape
+— OpenRouter, OpenAI itself, etc.)
+
+`llm:` (reasoning/planning) and `embeddings:` stay on local Ollama —
+`code_model` is the only slot this repo currently ships pointed remote. The
+same adapter works for `llm:` too (any slot typed `core.llm.LLMClient`), if
+you'd rather upgrade reasoning quality, or revert `code_model` to Ollama by
+changing `adapter: openai_compatible` back to `adapter: ollama` and adding
+a `model:` field (e.g. `qwen3-coder`) instead of `models:`.
 
 ---
 
