@@ -4,8 +4,13 @@ This document explains the whole application: what each layer does, how a
 single request flows through it end to end, and what each phase built. Every
 concept is mapped to its Java/Spring equivalent.
 
-For what changed since the original design plan and why, see
-[WORKFLOW_CHANGES.md](WORKFLOW_CHANGES.md).
+This originally replaced an earlier `WORKFLOW.pdf` design plan, and for a
+while a separate `WORKFLOW_CHANGES.md` tracked every way the two diverged.
+That document eventually became mostly historical trivia — nearly every
+divergence it listed (hybrid retrieval, the restart-durable approval gate,
+`open_pr`, the test-retry loop, most of the chat UI) had been resolved back
+in line with the plan by Phase 23, so it was folded into Section 13 below
+and removed rather than kept as a second, overlapping document.
 
 ## 1. What Forge does
 
@@ -474,3 +479,46 @@ approval gate onto LangGraph's `interrupt()`** (Phase 20): a denied approval
 no longer just raises, and a pending approval survives a restart and a dead
 browser session, resumable via `/history` → Resume or
 `python -m app.resume <thread_id>` — see Section 5.
+
+## 13. What still differs from the original plan (and what's new that it never anticipated)
+
+The original `WORKFLOW.pdf` plan predates almost everything in this
+document. By Phase 23, nearly every divergence from it had resolved back in
+line with the plan — hybrid retrieval, the restart-durable approval gate,
+`open_pr`, the test-retry loop, most of the chat UI, and more were all
+"planned but not built" at one point and are now just... built (see the
+phase table, Section 7). What's left are a handful of permanent
+architectural decisions, plus two things the plan never saw coming at all.
+
+**Permanent divergences:**
+
+- **Format: PDF → this Markdown file.** A binary PDF doesn't diff or review
+  in a PR and drifts out of sync fast — this file's own history before this
+  round of fixes was the proof.
+- **Knowledge layer: LlamaIndex + Chroma → raw Ollama embeddings + Chroma.**
+  LlamaIndex sat in `requirements.txt` unused; Phase 9 removed it.
+- **Chunking: tree-sitter → stdlib `ast`, Python-only.** Same structure-aware
+  result for Python, no extra dependency (Phase 10). Non-Python languages
+  (`.js`/`.ts`/`.go`) still get whole-file chunks — no per-symbol chunker
+  was ever added for them.
+- **State: one SQLite file → two.** `.data/forge.db` (`run_history`'s
+  `runs`/`run_steps`, Phase 19) and `.data/checkpoints.db` (LangGraph's
+  checkpointer) were never merged into the plan's single-file vision.
+- **Observability: native `phoenix serve` → Docker container**, and
+  **deployment: bind-mounted `.data/` → named Docker volume** — both forced
+  by real build/runtime failures on this machine (a C++ toolchain
+  `sqlean-py` needs, and SQLite locking over Docker Desktop's Windows
+  bind-mount translation), not a design preference.
+
+**Two things the original plan never anticipated:**
+
+- **The Q&A path bypasses the engine/graph entirely** (Phase 16, refined in
+  Phase 23) — streaming a response requires it, since `Engine.ask()` only
+  returns a finished, non-streamed `Answer`. See Section 4.
+- **`code_model` defaults to a hosted API, not local Ollama, in the
+  checked-in `config.yaml`** (Phase 22) — a real break from this project's
+  original "`$0`, fully local" premise for that one slot specifically (`llm`/
+  `answer_model`/`embeddings` all stay local). Skip filling in
+  `CODE_MODEL_NAME`/`CODE_MODEL_API_KEY`/etc. in `.env` and the code-edit
+  step of the task path silently doesn't work — see `README.md`'s "Upgrade
+  path" section for the actual config shape and how to revert it to Ollama.

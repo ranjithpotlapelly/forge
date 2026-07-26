@@ -346,6 +346,5 @@ denied `open_pr` never reaches the network (proven in
 reasoned about).
 
 See [WORKFLOW.md](WORKFLOW.md) for the full architecture walkthrough
-(Java/Spring analogies, end-to-end request flows, diagrams) and
-[WORKFLOW_CHANGES.md](WORKFLOW_CHANGES.md) for what changed from the
-original design plan.
+(Java/Spring analogies, end-to-end request flows, diagrams), including
+Section 13 for what still differs from the original design plan and why.
