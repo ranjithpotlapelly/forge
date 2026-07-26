@@ -219,7 +219,7 @@ network — proven against a real local HTTP server (not mocked) in
 | Your Git repo | the actual Forge source code | The system of record |
 | Phoenix (Docker container) | traces of every run | Zipkin server |
 
-## 7. The twelve phases
+## 7. The phases
 
 Each phase was independently testable (`python -m app.*_smoke_test`) before
 the next began.
@@ -248,6 +248,7 @@ the next began.
 | 20 | Approval gate on `interrupt()` + checkpoint (survives a restart), `python -m app.resume` | done |
 | 21 | Conversation history in Chainlit (`/history`, resume/delete a thread) | done |
 | 22 | Hosted (OpenAI-compatible) LLM adapter for `llm`/`code_model` | done |
+| 23 | Q&A latency tuning (`answer_model`, per-path `num_ctx`, `keep_alive`, prompt trimming, `app/bench.py`) | done |
 
 ## 8. Upgrade path
 
