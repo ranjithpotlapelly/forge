@@ -21,8 +21,23 @@ import requests
 from core.types import Message
 
 class OpenAICompatibleLLM:
-    def __init__(self, model: str, base_url: str, api_key: str = "", timeout: float = 120, **opts):
-        self.model = model
+    def __init__(
+        self,
+        model: str | None = None,
+        models: list[str] | None = None,
+        base_url: str = "",
+        api_key: str = "",
+        timeout: float = 120,
+        **opts,
+    ):
+        if not model and not models:
+            raise ValueError("OpenAICompatibleLLM requires 'model' or 'models'")
+        # 'models' (plural) is OpenRouter's native fallback chain: the server
+        # tries each id in order and moves to the next on rate-limit/moderation/
+        # downtime/any error, so no client-side retry logic is needed here.
+        # self.model is kept as the primary id purely for logging/identification.
+        self.models = models
+        self.model = model or models[0]
         self.base_url = base_url.rstrip("/")
         self.opts = opts
         self._api_key = api_key
@@ -61,11 +76,14 @@ class OpenAICompatibleLLM:
         # rather than sent as a param the server won't recognize.
         merged.pop("num_ctx", None)
         payload: dict = {
-            "model": self.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": stream,
             **merged,
         }
+        if self.models:
+            payload["models"] = self.models
+        else:
+            payload["model"] = self.model
         if fmt == "json":
             payload["response_format"] = {"type": "json_object"}
         return payload

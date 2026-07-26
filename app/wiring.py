@@ -19,9 +19,17 @@ def _build_ollama_llm(section: dict, cfg: dict) -> LLMClient:
 
 def _build_openai_compatible_llm(section: dict) -> LLMClient:
     from adapters.llm_openai_compatible import OpenAICompatibleLLM
-    rest = {k: v for k, v in section.items() if k not in ("adapter", "model", "base_url", "api_key")}
+    rest = {k: v for k, v in section.items() if k not in ("adapter", "model", "models", "base_url", "api_key")}
+    # Unset fallback env vars (e.g. CODE_MODEL_FALLBACK_2 left blank) substitute
+    # to "" via config_loader -- drop those rather than sending an empty model
+    # id to the provider.
+    models = [m for m in (section.get("models") or []) if m] or None
     return OpenAICompatibleLLM(
-        model=section["model"], base_url=section["base_url"], api_key=section.get("api_key", ""), **rest,
+        model=section.get("model"),
+        models=models,
+        base_url=section["base_url"],
+        api_key=section.get("api_key", ""),
+        **rest,
     )
 
 def _build_llm_from_section(section: dict, cfg: dict) -> LLMClient:

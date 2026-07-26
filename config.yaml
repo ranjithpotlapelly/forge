@@ -35,17 +35,22 @@ answer_model:
   model: qwen3:4b
 
 # The code-EDIT step (Phase 7) gets its own slot so patch quality can be upgraded
-# independently. Local by default; point this at a hosted endpoint when you're ready.
+# independently. llm/answer_model/embeddings stay on Ollama -- only this block
+# goes remote. -> adapters/llm_openai_compatible.py. See README's "Upgrade path".
+# base_url/api_key/model all come from .env via config_loader's ${VAR}
+# substitution (app/config_loader.py is the only place that knows env var
+# names) -- the adapter itself never reads os.environ.
 code_model:
-  adapter: ollama
-  model: llama3.2:1b           # smaller/faster model for the code-edit step
-  # Upgrade path (Phase 22): swap ONLY this block to move the code-edit step
-  # to a hosted, OpenAI-compatible endpoint -- llm/embeddings stay local and
-  # free. -> adapters/llm_openai_compatible.py. See README's "Upgrade path".
-  #   adapter: openai_compatible
-  #   model: gpt-4o-mini
-  #   base_url: https://api.openai.com/v1
-  #   api_key: ${CODE_MODEL_API_KEY}    # from .env; never hardcode, never logged
+  adapter: openai_compatible
+  # OpenRouter fallback chain (server-side, no client retry logic needed):
+  # tries CODE_MODEL_NAME first, then FALLBACK_1, then FALLBACK_2, moving on
+  # rate-limit/moderation/downtime/any error. See adapters/llm_openai_compatible.py.
+  models:
+    - ${CODE_MODEL_NAME}
+    - ${CODE_MODEL_FALLBACK_1}
+    - ${CODE_MODEL_FALLBACK_2}
+  base_url: ${CODE_MODEL_BASE_URL}
+  api_key: ${CODE_MODEL_API_KEY}    # from .env; never hardcode, never logged
 
 # --- Knowledge (Phase 3) ---
 embeddings:
