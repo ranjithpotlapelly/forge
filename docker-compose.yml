@@ -41,6 +41,9 @@ services:
       # volume uses Docker's real storage driver instead, so it just works;
       # the tradeoff is you can't browse .data/ directly from Windows.
       - forge_data:/app/.data
+      # Read-only bind mount so /index can reach repos outside this checkout.
+      # Container path, not the Windows path, is what you pass to /index.
+      - C:/Users/Ranjith/Downloads/files:/mnt/host_projects:ro
     depends_on:
       - phoenix
 

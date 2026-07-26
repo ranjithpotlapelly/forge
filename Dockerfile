@@ -20,8 +20,14 @@ WORKDIR /app
 
 # git: adapters/mcp_servers/workspace_server.py shells out to it (init/add/
 # commit) for the sandboxed workspace -- python:3.14-slim doesn't ship it.
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+# nodejs/npm: same file's run_tests() shells out to `npm ci`/`npm test` for
+# JS/TS workspaces (package.json marker) -- also not on this base image.
+# chromium: karma-chrome-launcher (Angular/Karma's default test runner)
+# needs an actual browser binary to launch headless; CHROME_BIN below points
+# it at this package's binary instead of the "chrome" it'd otherwise look for.
+RUN apt-get update && apt-get install -y --no-install-recommends git nodejs npm chromium \
     && rm -rf /var/lib/apt/lists/*
+ENV CHROME_BIN=/usr/bin/chromium
 
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \

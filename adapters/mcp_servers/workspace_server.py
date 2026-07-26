@@ -91,49 +91,70 @@ def push(remote: str = "origin", branch: str = "main") -> str:
     against a checkout you control)."""
     return _run_git("push", remote, branch)
 
-# marker file -> command, checked in this order. The pytest command runs via
-# `sys.executable -m pytest` rather than a bare "pytest" binary lookup: this
-# server's own subprocess inherits its caller's PATH, which doesn't include
-# the venv's Scripts/ dir when the venv isn't "activated" (true of how this
-# whole project has been run) — `-m` guarantees the same interpreter this
-# server itself runs under, so an installed pytest is always found.
-_BUILD_COMMANDS: list[tuple[str, list[str]]] = [
-    ("pom.xml", ["mvn", "-q", "test"]),
-    ("build.gradle", ["gradle", "test"]),
-    ("pytest.ini", [sys.executable, "-m", "pytest", "-q"]),
-    ("pyproject.toml", [sys.executable, "-m", "pytest", "-q"]),
+# marker file -> steps, checked in this order. Each step is run in sequence;
+# the first non-zero exit stops the run there (its output is what's reported).
+# The pytest command runs via `sys.executable -m pytest` rather than a bare
+# "pytest" binary lookup: this server's own subprocess inherits its caller's
+# PATH, which doesn't include the venv's Scripts/ dir when the venv isn't
+# "activated" (true of how this whole project has been run) — `-m` guarantees
+# the same interpreter this server itself runs under, so an installed pytest
+# is always found.
+# npm gets two steps, not one: `node_modules/` is gitignored in virtually
+# every JS/TS repo, so a fresh clone never has it — `npm test` alone would
+# just fail with "ng/jest/etc: not found". `npm ci` (not `npm install`)
+# because it's the one that requires and trusts package-lock.json exactly,
+# which is what CI/sandboxed runs should do.
+_BUILD_COMMANDS: list[tuple[str, list[list[str]]]] = [
+    ("pom.xml", [["mvn", "-q", "test"]]),
+    ("build.gradle", [["gradle", "test"]]),
+    ("pytest.ini", [[sys.executable, "-m", "pytest", "-q"]]),
+    ("pyproject.toml", [[sys.executable, "-m", "pytest", "-q"]]),
+    # `--browsers=ChromeHeadless` isn't in here: it's Karma-specific and not
+    # every npm test setup recognizes it (or even has a schema for the "test"
+    # target at all — that's a per-project config problem, not this server's
+    # to solve). `--watch=false` is the one flag that's near-universal for a
+    # non-interactive CI run (Angular/Karma, Jest, etc. all honor it).
+    ("package.json", [["npm", "ci"], ["npm", "test", "--", "--watch=false"]]),
 ]
 
 _MAX_OUTPUT_CHARS = 4000
 
-def _detect_build_command() -> list[str]:
-    for marker, command in _BUILD_COMMANDS:
+def _detect_build_steps() -> list[list[str]]:
+    for marker, steps in _BUILD_COMMANDS:
         if (WORKSPACE / marker).exists():
-            return command
+            return steps
     markers = ", ".join(m for m, _ in _BUILD_COMMANDS)
     raise ValueError(f"no recognized build system in {WORKSPACE} (looked for: {markers})")
 
 @mcp.tool()
 def run_tests(timeout_s: int = 300) -> str:
-    """Run the workspace's test suite (auto-detects Maven/Gradle/pytest from
-    pom.xml/build.gradle/pytest.ini/pyproject.toml). Read-only in effect —
-    runs inside the workspace sandbox only and changes nothing outside it —
-    so Forge does not gate this behind human approval. Returns a JSON string:
-    {passed, exit_code, output, duration_s}. `output` is stdout+stderr,
-    truncated to the last ~4000 chars so a full Maven/Gradle run doesn't blow
-    a model's context window when fed into a retry prompt."""
-    command = _detect_build_command()
+    """Run the workspace's test suite (auto-detects Maven/Gradle/pytest/npm
+    from pom.xml/build.gradle/pytest.ini/pyproject.toml/package.json).
+    Read-only in effect — runs inside the workspace sandbox only and changes
+    nothing outside it — so Forge does not gate this behind human approval.
+    Returns a JSON string: {passed, exit_code, output, duration_s}. `output`
+    is stdout+stderr (across every step run, for npm's install-then-test
+    sequence), truncated to the last ~4000 chars so a full Maven/Gradle/npm
+    run doesn't blow a model's context window when fed into a retry prompt.
+    `timeout_s` applies per step, not to the whole sequence."""
+    steps = _detect_build_steps()
     start = time.monotonic()
-    try:
-        result = subprocess.run(
-            command, cwd=WORKSPACE, capture_output=True, text=True,
-            timeout=timeout_s, stdin=subprocess.DEVNULL,
-        )
-        exit_code = result.returncode
-        output = result.stdout + result.stderr
-    except subprocess.TimeoutExpired as e:
-        exit_code = -1
-        output = (e.stdout or "") + (e.stderr or "") + f"\n[timed out after {timeout_s}s]"
+    output_parts: list[str] = []
+    exit_code = 0
+    for step in steps:
+        try:
+            result = subprocess.run(
+                step, cwd=WORKSPACE, capture_output=True, text=True,
+                timeout=timeout_s, stdin=subprocess.DEVNULL,
+            )
+            exit_code = result.returncode
+            output_parts.append(result.stdout + result.stderr)
+        except subprocess.TimeoutExpired as e:
+            exit_code = -1
+            output_parts.append((e.stdout or "") + (e.stderr or "") + f"\n[timed out after {timeout_s}s]")
+        if exit_code != 0:
+            break
+    output = "\n".join(output_parts)
     duration_s = round(time.monotonic() - start, 2)
     if len(output) > _MAX_OUTPUT_CHARS:
         output = output[-_MAX_OUTPUT_CHARS:]

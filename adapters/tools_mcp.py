@@ -8,12 +8,30 @@ bridges each sync Tool.run() call onto it.
 """
 from __future__ import annotations
 import asyncio
+import os
 import threading
 from contextlib import AsyncExitStack
 from typing import Any
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 from core.tools import Tool
+
+# StdioServerParameters.env defaults to get_default_environment() (just HOME
+# and PATH) when omitted -- deliberately not the full parent environment, to
+# avoid leaking secrets (GITHUB_TOKEN, CODE_MODEL_API_KEY, ...) into a tool
+# subprocess. CHROME_BIN is added on top of that safe default rather than
+# passing the full os.environ, since workspace_server.py's run_tests (and the
+# npm test it shells out to for JS/TS workspaces) needs it to find the
+# Chromium installed in this image, and it carries no secret.
+_EXTRA_ENV_VARS = ("CHROME_BIN",)
+
+def _server_environment() -> dict[str, str]:
+    env = get_default_environment()
+    for key in _EXTRA_ENV_VARS:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    return env
 
 class _McpConnection:
     """One background event loop + one live MCP session, shared by every
@@ -72,7 +90,7 @@ class McpTool:
 
 def load_mcp_tools(command: str, args: list[str], require_approval_for: set[str]) -> list[Tool]:
     """Connect to an MCP server and return its tools as core.tools.Tool instances."""
-    connection = _McpConnection(StdioServerParameters(command=command, args=args))
+    connection = _McpConnection(StdioServerParameters(command=command, args=args, env=_server_environment()))
 
     async def _list(session: ClientSession):
         return await session.list_tools()
