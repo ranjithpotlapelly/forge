@@ -119,17 +119,36 @@ _BUILD_COMMANDS: list[tuple[str, list[list[str]]]] = [
 
 _MAX_OUTPUT_CHARS = 4000
 
-def _detect_build_steps() -> list[list[str]]:
+# Skipped when searching one level down for a marker: never the actual
+# project root, and node_modules/.git can be enormous -- iterdir()-ing
+# their contents for a marker check would be pure waste.
+_SEARCH_EXCLUDED_DIRS = {".git", "node_modules", "dist", "build", "target", "__pycache__", ".venv", "venv"}
+
+def _detect_build_steps() -> tuple[list[list[str]], Path]:
+    """Returns (steps, cwd) -- cwd is WORKSPACE itself, or one level down,
+    whichever directory the marker was actually found in. repo_path (hence
+    WORKSPACE, its clone) doesn't always coincide with a JS/TS/Java project's
+    own root: e.g. this repo's real upstream structure is a wrapper
+    directory containing the Angular app one level down, alongside an
+    unrelated top-level file or two -- searching only WORKSPACE's immediate
+    root would never find package.json there."""
     for marker, steps in _BUILD_COMMANDS:
         if (WORKSPACE / marker).exists():
-            return steps
+            return steps, WORKSPACE
+    for child in sorted(WORKSPACE.iterdir()):
+        if not child.is_dir() or child.name in _SEARCH_EXCLUDED_DIRS:
+            continue
+        for marker, steps in _BUILD_COMMANDS:
+            if (child / marker).exists():
+                return steps, child
     markers = ", ".join(m for m, _ in _BUILD_COMMANDS)
-    raise ValueError(f"no recognized build system in {WORKSPACE} (looked for: {markers})")
+    raise ValueError(f"no recognized build system in {WORKSPACE} or its immediate subdirectories (looked for: {markers})")
 
 @mcp.tool()
 def run_tests(timeout_s: int = 300) -> str:
     """Run the workspace's test suite (auto-detects Maven/Gradle/pytest/npm
-    from pom.xml/build.gradle/pytest.ini/pyproject.toml/package.json).
+    from pom.xml/build.gradle/pytest.ini/pyproject.toml/package.json, checked
+    in WORKSPACE's root and, failing that, its immediate subdirectories).
     Read-only in effect — runs inside the workspace sandbox only and changes
     nothing outside it — so Forge does not gate this behind human approval.
     Returns a JSON string: {passed, exit_code, output, duration_s}. `output`
@@ -137,14 +156,14 @@ def run_tests(timeout_s: int = 300) -> str:
     sequence), truncated to the last ~4000 chars so a full Maven/Gradle/npm
     run doesn't blow a model's context window when fed into a retry prompt.
     `timeout_s` applies per step, not to the whole sequence."""
-    steps = _detect_build_steps()
+    steps, cwd = _detect_build_steps()
     start = time.monotonic()
     output_parts: list[str] = []
     exit_code = 0
     for step in steps:
         try:
             result = subprocess.run(
-                step, cwd=WORKSPACE, capture_output=True, text=True,
+                step, cwd=cwd, capture_output=True, text=True,
                 timeout=timeout_s, stdin=subprocess.DEVNULL,
             )
             exit_code = result.returncode

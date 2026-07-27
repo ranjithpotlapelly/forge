@@ -1,5 +1,5 @@
 """Adapter (Phase 15): a SQLite FTS5 lexical index over symbol names,
-signatures, and file paths.
+signatures, file paths, and (lightly weighted) content.
 
 Embeddings are weak at exact identifier matching ("where is validateToken
 called?" needs the literal token, not its vibe). This index exists to answer
@@ -7,6 +7,13 @@ that half of the query well; it's not a general-purpose retriever on its own
 -- adapters/retriever_hybrid.py fuses it with the semantic (Chroma) one
 behind core.retriever.Retriever, and is the only thing that imports this
 module.
+
+content joined the indexed columns after a real miss: whole-file chunks
+(every non-Python language -- no per-symbol chunker exists for them) get a
+placeholder symbol ("<file>") and a useless first-line "signature", so path
+was their only lexical signal, even for a query matching text plainly
+visible in the file. See _BM25_WEIGHTS below for why content stays low-
+weighted rather than equal to symbol/signature.
 """
 from __future__ import annotations
 import json
@@ -37,9 +44,17 @@ _STOPWORDS = frozenset("""
 
 # Column weights for bm25(), positional to the table's column order below.
 # Symbol matches an exact identifier lookup cares about most; signature (the
-# def/class header line) next; file path last -- content/id/metadata are
-# UNINDEXED so no term ever matches there and their weight is moot.
-_BM25_WEIGHTS = (0.0, 5.0, 2.0, 1.0, 0.0, 0.0)
+# def/class header line) next; file path after that. content is weighted
+# lowest, not UNINDEXED: Python chunks already have a real symbol/signature,
+# so content barely moves their score -- but whole-file JS/TS/Go chunks (no
+# per-symbol chunker exists for those languages) get symbol="<file>" and a
+# useless first-line "signature", leaving path as their only prior lexical
+# signal. A real miss surfaced this: "dark mode toggle" appears literally in
+# shell.component.ts's content, but a lexical search for it returned zero
+# hits, because content was UNINDEXED -- only path (via filename tokens
+# like "shell") could ever match a whole-file chunk. id/metadata stay
+# UNINDEXED; they're never meant to be searched.
+_BM25_WEIGHTS = (0.0, 5.0, 2.0, 1.0, 0.5, 0.0)
 
 _PATH_SEP_RE = re.compile(r"[/\\._-]")
 
@@ -83,7 +98,7 @@ class FtsIndex:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS lexical USING fts5("
-            "id UNINDEXED, symbol, signature, path, content UNINDEXED, metadata UNINDEXED, "
+            "id UNINDEXED, symbol, signature, path, content, metadata UNINDEXED, "
             # unicode61's default separators split snake_case (approval_gate_node
             # -> approval/gate/node), which would let any one of those common
             # English words match on their own. Adding '_' as a token character
