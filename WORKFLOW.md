@@ -38,7 +38,11 @@ what Q&A can retrieve. The task path always edits/tests/commits against
 `config.yaml`'s `forge.repo_path` (read once, at startup) — indexing a repo
 does not retarget what gets edited. If you want to edit a different repo
 than the one you last indexed, `repo_path` has to point there too, and it
-must already be a git repo.
+must be the exact directory containing `.git` — not merely somewhere
+inside a git repo. A real project's actual git root and its build root
+(where `package.json`/`pom.xml` lives) can differ; `repo_path` follows the
+former, and `run_tests` now searches one level down for the latter — see
+Section 5.
 
 Think of it as a grounded Q&A assistant over your code, plus a chat-driven,
 approval-gated workflow for making changes to a separately-configured repo.
@@ -233,9 +237,19 @@ flowchart TD
 
 Notable behavior, some of it only visible once you've actually run a task:
 
-- **`prepare_workspace` requires `forge.repo_path` to already be a clean git
-  repo** (no uncommitted changes) — it clones it into the sandbox and checks
-  out a fresh branch there. Edits never touch the source directly.
+- **`prepare_workspace` requires `forge.repo_path` to be the exact directory
+  containing `.git`** (no uncommitted changes either) — it clones it into
+  the sandbox and checks out a fresh branch there. Edits never touch the
+  source directly. This bit hard in practice once: a real project's git
+  root and its actual build root can differ (e.g. a wrapper directory with
+  the app one level down, matching this project's own real upstream
+  structure) — `repo_path` must be the *git* root, even if that's not where
+  `package.json`/`pom.xml` live.
+- **`run_tests` checks its exact working directory for build-system
+  markers first, then falls back to searching one level down** (skipping
+  `node_modules`/`.git`/etc.) before giving up — added after exactly the
+  mismatch above: `repo_path` (hence the sandbox clone) can legitimately be
+  a directory that isn't the JS/Java project's own root.
 - **`edit`'s retry (attempt > 1) always does a whole-file rewrite**, not a
   re-splice at the original symbol's line numbers — those go stale the
   moment attempt 1 changes the file. Small local models can introduce
@@ -417,6 +431,23 @@ no per-symbol chunker exists for those languages), and writes them into
 Chroma. **This only affects Q&A** — see the callout in Section 1 about why
 it doesn't retarget the task path.
 
+**`/index`ing the same path again after `repo_path` changes creates
+duplicates, not updates.** `product/indexing.py:index_repo()` only ever
+calls `retriever.add()` — there's no clearing or upsert-by-changed-path
+logic. Each chunk's id is a hash of `path:start_line:symbol` (`adapters/
+_doc_id.py`), so if the *same file's* indexed `path` string changes (e.g.
+`repo_path` moves and everything gets a new prefix), the old chunks aren't
+recognized as stale versions of the new ones — they just accumulate
+alongside them, diluting retrieval with dead, unreachable paths. If you
+change `repo_path`, clear both stores before re-indexing rather than just
+running `/index` again:
+```python
+import chromadb
+client = chromadb.PersistentClient(path=cfg["retriever"]["path"])
+client.delete_collection(name=cfg["retriever"]["collection"])
+# and DELETE FROM lexical in cfg["retriever"]["lexical_path"]'s sqlite file
+```
+
 **C. Ask a question about the code**
 
 Open `http://localhost:8010`, type a question. The answer streams in with
@@ -453,6 +484,8 @@ any errors.
 | "Retrieving..."/a plan never resolves | Check `docker stats forge-forge-1` — near-idle CPU with no new log lines means the message never reached the backend (dead browser session), not a slow model. Refresh and resend |
 | `push`/`open_pr` fails with a git object-directory error | `forge.repo_path`'s host directory is bind-mounted read-only (`:ro`) — Forge's sandbox clone can commit fine, but can't push back into a read-only source. Either make the mount read-write, or treat push as a manual step done outside Forge once tests pass |
 | A JS/TS `run_tests` step needs a browser | The image installs `nodejs`/`npm`/`chromium` and sets `CHROME_BIN`; a project's own `npm test` still needs its own karma/jasmine (or equivalent) config and devDependencies — Forge doesn't scaffold those for you |
+| `prepare_workspace` fails with "is not a git repository" | `repo_path` isn't the exact directory containing `.git` — check `git rev-parse --show-toplevel` on the real repo and point `repo_path` at that, even if it's not where `package.json`/`pom.xml` lives (`run_tests` searches one level down for those on its own) |
+| A plan targets the wrong file for an obviously-relevant query | Check both retriever halves directly: `retriever.search(query, k=...)` (semantic+lexical fused) and, if it's a non-Python file, whether the literal text you expect is even in a *content*-indexed column — `adapters/retriever_fts.py`'s FTS5 table only started indexing `content` (not just `symbol`/`signature`/`path`) after a real miss; a stale index built before that fix, or one with duplicate stale-path entries from a `repo_path` change, won't have this signal until you clear and re-`/index` |
 
 ## 12. Recommendations
 
@@ -500,7 +533,20 @@ architectural decisions, plus two things the plan never saw coming at all.
 - **Chunking: tree-sitter → stdlib `ast`, Python-only.** Same structure-aware
   result for Python, no extra dependency (Phase 10). Non-Python languages
   (`.js`/`.ts`/`.go`) still get whole-file chunks — no per-symbol chunker
-  was ever added for them.
+  was ever added for them. This has a real, measured cost: whole-file
+  chunks get a placeholder `symbol` (`"<file>"`) and a useless first-line
+  `signature`, so `adapters/retriever_fts.py`'s lexical index — originally
+  `symbol`/`signature`/`path` only — had *no* content-based signal for any
+  JS/TS/Go file, just filename matching. A real task surfaced this: a query
+  containing the literal text of a button's `title` attribute in
+  `shell.component.ts` returned zero lexical hits and didn't rank in the
+  fused top-8, purely because that text lived in the one column
+  (`content`) the FTS5 table left `UNINDEXED`. Fixed by indexing `content`
+  at a low BM25 weight (0.5, well under `symbol`'s 5.0) — low enough to
+  barely move Python chunks' already-good ranking, high enough to give
+  whole-file chunks a real content-based signal for the first time. The
+  per-symbol-chunking gap itself is still open; this only mitigates its
+  lexical-search consequence.
 - **State: one SQLite file → two.** `.data/forge.db` (`run_history`'s
   `runs`/`run_steps`, Phase 19) and `.data/checkpoints.db` (LangGraph's
   checkpointer) were never merged into the plan's single-file vision.
