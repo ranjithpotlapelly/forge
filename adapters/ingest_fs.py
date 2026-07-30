@@ -9,13 +9,14 @@ chunks, since there's no parser for them here.
 """
 from __future__ import annotations
 import ast
+import subprocess
 from pathlib import Path
 from typing import Iterable
 from core.types import Document
 
 _EXCLUDED_DIRS = {
     ".git", ".venv", "venv", "__pycache__", ".data", ".idea", ".claude",
-    ".chainlit", "node_modules", ".pytest_cache", "dist", "build",
+    ".chainlit", "node_modules", ".pytest_cache", "dist", "build", "target",
 }
 
 _LANGUAGE_EXTENSIONS = {
@@ -23,6 +24,7 @@ _LANGUAGE_EXTENSIONS = {
     "javascript": (".js", ".jsx"),
     "typescript": (".ts", ".tsx"),
     "go": (".go",),
+    "java": (".java",),
 }
 
 class FsIngestSource:
@@ -33,14 +35,25 @@ class FsIngestSource:
             ext for lang in languages for ext in _LANGUAGE_EXTENSIONS.get(lang, ())
         }
 
-    def documents(self) -> Iterable[Document]:
-        for path in self._walk():
+    def documents(self, only: list[str] | None = None) -> Iterable[Document]:
+        """only, if given, is a list of paths relative to repo_path (e.g. from
+        changed_paths()) -- skips the full rglob walk and reads just those
+        files, for reindexing what changed instead of the whole tree. Not
+        part of the IngestSource port (index_repo never passes it); additive,
+        used only by product.indexing.index_changed_files."""
+        for path in self._walk(only):
             if path.suffix == ".py":
                 yield from self._python_chunks(path)
             else:
                 yield from self._whole_file_chunk(path)
 
-    def _walk(self) -> Iterable[Path]:
+    def _walk(self, only: list[str] | None = None) -> Iterable[Path]:
+        if only is not None:
+            for rel in only:
+                path = self.repo_path / rel
+                if path.is_file() and path.suffix in self._extensions:
+                    yield path
+            return
         for path in self.repo_path.rglob("*"):
             if not path.is_file() or path.suffix not in self._extensions:
                 continue
@@ -100,3 +113,46 @@ class FsIngestSource:
                 "start_line": 1, "end_line": len(source.splitlines()),
             },
         )
+
+def changed_paths(repo_path: str) -> tuple[list[str], list[str]]:
+    """Working-tree file paths (relative to repo_path, forward-slashed) that
+    differ from HEAD, split into (changed, deleted) -- changed covers
+    modified/added/untracked/renamed-to (anything FsIngestSource.documents(only=...)
+    should re-embed), deleted covers anything gone from the working tree
+    (anything Retriever.delete() should purge). Used to reindex only what's
+    about to be committed instead of walking the whole repo.
+
+    A plain `git diff --name-status HEAD` misses brand-new files that were
+    never `git add`ed -- they're not in HEAD *or* the index, so diffing
+    against HEAD alone shows nothing for them; `git ls-files --others` covers
+    exactly that gap.
+    """
+    diff = subprocess.run(
+        ["git", "diff", "--name-status", "HEAD"],
+        cwd=repo_path, capture_output=True, text=True, timeout=30,
+    )
+    if diff.returncode != 0:
+        raise RuntimeError(f"git diff failed in {repo_path}: {diff.stderr.strip()}")
+    changed: list[str] = []
+    deleted: list[str] = []
+    for line in diff.stdout.splitlines():
+        if not line.strip():
+            continue
+        status, *paths = line.split("\t")
+        if status == "D":
+            deleted.append(paths[0])
+        elif status.startswith("R"):  # "R100\told\tnew"
+            deleted.append(paths[0])
+            changed.append(paths[1])
+        else:  # M, A, C, T, ...
+            changed.append(paths[-1])
+
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=repo_path, capture_output=True, text=True, timeout=30,
+    )
+    if untracked.returncode != 0:
+        raise RuntimeError(f"git ls-files failed in {repo_path}: {untracked.stderr.strip()}")
+    changed.extend(p for p in untracked.stdout.splitlines() if p.strip())
+
+    return changed, deleted

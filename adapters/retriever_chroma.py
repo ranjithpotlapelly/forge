@@ -38,6 +38,20 @@ class ChromaRetriever:
             embeddings = self._embed(contents)
             self._col.upsert(ids=ids, documents=contents, metadatas=metadatas, embeddings=embeddings)
 
+    def delete(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        with _tracer.start_as_current_span("retriever.delete") as span:
+            span.set_attribute("retriever.collection", self.collection)
+            span.set_attribute("retriever.delete.path_count", len(paths))
+            self._col.delete(where={"path": {"$in": paths}})
+
+    def clear(self) -> None:
+        with _tracer.start_as_current_span("retriever.clear") as span:
+            span.set_attribute("retriever.collection", self.collection)
+            self._client.delete_collection(self.collection)
+            self._col = self._client.get_or_create_collection(name=self.collection)
+
     def search(self, query: str, k: int = 8, **filters) -> list[Chunk]:
         with _tracer.start_as_current_span("retriever.search") as span:
             span.set_attribute("retriever.collection", self.collection)

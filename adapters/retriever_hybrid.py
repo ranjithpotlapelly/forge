@@ -48,6 +48,16 @@ class HybridRetriever:
         self._semantic.add(documents)
         self._lexical.add(documents)
 
+    def delete(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        self._semantic.delete(paths)
+        self._lexical.delete(paths)
+
+    def clear(self) -> None:
+        self._semantic.clear()
+        self._lexical.clear()
+
     def search(self, query: str, k: int = 8, **filters) -> list[Chunk]:
         pool = max(k * _CANDIDATE_MULTIPLIER, _MIN_CANDIDATES)
         semantic_hits = self._semantic.search(query, k=pool, **filters)

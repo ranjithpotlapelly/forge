@@ -133,6 +133,26 @@ class FtsIndex:
         )
         self._conn.commit()
 
+    def delete(self, paths: list[str]) -> None:
+        # path isn't stored verbatim (see add(): _path_words() splits it into
+        # space-separated tokens for FTS matching), so it can't be matched
+        # with a plain WHERE path = ? -- filter on the untouched metadata
+        # JSON instead, same source of truth _path_words() derives its column
+        # from.
+        if not paths:
+            return
+        path_set = set(paths)
+        rows = self._conn.execute("SELECT id, metadata FROM lexical").fetchall()
+        stale_ids = [rid for rid, meta in rows if json.loads(meta).get("path") in path_set]
+        if stale_ids:
+            placeholders = ",".join("?" for _ in stale_ids)
+            self._conn.execute(f"DELETE FROM lexical WHERE id IN ({placeholders})", stale_ids)
+            self._conn.commit()
+
+    def clear(self) -> None:
+        self._conn.execute("DELETE FROM lexical")
+        self._conn.commit()
+
     def search(self, query: str, k: int = 8) -> list[Chunk]:
         match = _match_query(query)
         if match is None:

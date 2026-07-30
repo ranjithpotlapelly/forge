@@ -48,7 +48,7 @@ import chainlit as cl
 
 from adapters.engine_langgraph import build_answer_messages, classify_intent, decline, has_context
 from app.config_loader import load_config
-from app.index import run_index
+from app.index import run_incremental_index, run_index
 from app.wiring import (
     build_answer_model, build_engine, build_fetch_issue_tool, build_llm,
     build_retriever, build_run_history, build_tracing,
@@ -93,6 +93,8 @@ _LANGUAGE_BY_EXTENSION = {
 _HELP_TEXT = (
     "**Available commands**\n"
     "- `/index <path>` — index a repo (structure-aware chunking + embedding) so it becomes askable\n"
+    "- `/index <path> --changed` — reindex only files changed since HEAD (fast, before a commit)\n"
+    "- `/index --clear` — wipe the entire index (asks for confirmation first)\n"
     "- `/history` — list past conversations, with buttons to resume or delete each one\n"
     "- `/help` — show this message\n\n"
     "Anything else is classified as either a question about the indexed codebase "
@@ -247,23 +249,31 @@ async def _handle_question(question: str, thread_id: str) -> None:
 
 # --- /index (Phase 16) --------------------------------------------------------
 
-async def _handle_index(path: str) -> None:
-    progress = cl.Message(content=f"Indexing `{path}`…")
+async def _handle_index(path: str, changed_only: bool = False) -> None:
+    verb = "Reindexing changed files in" if changed_only else "Indexing"
+    progress = cl.Message(content=f"{verb} `{path}`…")
     await progress.send()
     loop = asyncio.get_running_loop()
 
     def on_progress(symbols: int, files: int) -> None:
-        progress.content = f"Indexing `{path}`… {symbols} symbol(s) across {files} file(s) so far"
+        progress.content = f"{verb} `{path}`… {symbols} symbol(s) across {files} file(s) so far"
         asyncio.run_coroutine_threadsafe(progress.update(), loop)
 
+    fn = run_incremental_index if changed_only else run_index
     try:
-        stats = await asyncio.to_thread(run_index, path, _cfg, _retriever, on_progress)
+        stats = await asyncio.to_thread(fn, path, _cfg, _retriever, on_progress)
     except Exception as e:  # noqa: BLE001 -- e.g. path doesn't exist; shown to the user, not swallowed
-        progress.content = f"Indexing `{path}` failed: {e}"
+        progress.content = f"{verb} `{path}` failed: {e}"
         await progress.update()
         return
 
-    progress.content = f"Indexed **{stats['symbols']}** symbol(s) across **{stats['files']}** file(s) from `{path}`."
+    if changed_only:
+        progress.content = (
+            f"Reindexed **{stats['symbols']}** symbol(s) across **{stats['files']}** changed file(s) "
+            f"(**{stats['deleted']}** deleted) from `{path}`."
+        )
+    else:
+        progress.content = f"Indexed **{stats['symbols']}** symbol(s) across **{stats['files']}** file(s) from `{path}`."
     await progress.update()
 
 # --- fetch_issue (Phase 18) ---------------------------------------------------
@@ -576,10 +586,26 @@ async def on_message(message: cl.Message):
 
     if lowered.startswith("/index"):
         arg = text[len("/index"):].strip()
-        if not arg:
-            await cl.Message(content="Usage: `/index C:\\path\\to\\repo`").send()
+        if arg == "--clear":
+            res = await cl.AskActionMessage(
+                content="Clear the **entire** code index? Q&A will have no context until you `/index` again.",
+                actions=[
+                    cl.Action(name="confirm", payload={}, label="🗑 Yes, clear index"),
+                    cl.Action(name="cancel", payload={}, label="Cancel"),
+                ],
+                timeout=60,
+            ).send()
+            if res and res["name"] == "confirm":
+                await asyncio.to_thread(_retriever.clear)
+                await cl.Message(content="Index cleared.").send()
             return
-        await _handle_index(arg)
+        changed_only = arg.endswith("--changed")
+        if changed_only:
+            arg = arg[: -len("--changed")].strip()
+        if not arg:
+            await cl.Message(content="Usage: `/index C:\\path\\to\\repo` (add `--changed` to only reindex files changed since HEAD)").send()
+            return
+        await _handle_index(arg, changed_only=changed_only)
         return
 
     if lowered == "/history":

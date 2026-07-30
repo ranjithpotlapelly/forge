@@ -1,10 +1,13 @@
 """Phase 10 smoke test: proves the ingest source extracts real structure-aware
-chunks from this repo and that indexing them makes real code semantically
+chunks from a real repo and that indexing them makes real code semantically
 searchable — not the 3 hardcoded docs every earlier smoke test used.
 
-Checks: (1) documents() yields a sane number of real function/class chunks,
-(2) indexing them into the retriever and asking a real question about the
-approval gate surfaces product/approval.py, (3) same for the MCP sandbox.
+Checks against whatever config.yaml's forge.repo_path currently points at
+(the rag-frontend Angular app as of this writing, not Forge's own source --
+update the two (query, expected_path) pairs below if repo_path ever changes
+again): (1) documents() yields a sane number of real chunks, (2) indexing
+them into the retriever and asking about the auth guard surfaces
+auth.guard.ts, (3) same for the JWT-attaching interceptor.
 Run from the repo root:  python -m app.ingest_smoke_test
 """
 from __future__ import annotations
@@ -33,8 +36,8 @@ def main() -> int:
     print(f"[ok] index_repo() -> indexed {stats['symbols']} chunk(s) across {stats['files']} file(s)")
 
     checks = [
-        ("how does the human approval gate for a tool call work?", "product/approval.py"),
-        ("how does the MCP workspace server stop a path from escaping the sandbox?", "adapters/mcp_servers/workspace_server.py"),
+        ("how does the auth guard block access to a route when the user isn't logged in?", "rag-frontend/src/app/core/guards/auth.guard.ts"),
+        ("how is the JWT token attached to outgoing HTTP requests?", "rag-frontend/src/app/core/interceptors/auth.interceptor.ts"),
     ]
     for query, expected_path in checks:
         results = retriever.search(query, k=3)

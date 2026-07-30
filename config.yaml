@@ -132,6 +132,6 @@ slack:
 # --- Forge product settings ---
 forge:
   repo_path: "/mnt/host_projects/rag-frontend-angular-v2"  # local checkout the task/edit/test pipeline targets (prepare_workspace/run_tests) -- NOT the same as whatever /index was last pointed at, which only widens Q&A retrieval. This is the real git root (matches ranjithpotlapelly/rag-frontend exactly -- .git lives here, not one level down); the Angular app itself is a subfolder (rag-frontend/) of this repo upstream, which is why it's not repo_path itself. run_tests' marker detection searches one level down for exactly this reason.
-  languages: [python, javascript, typescript, go]
+  languages: [python, javascript, typescript, go, java]
   # Anything that touches the outside world pauses for human approval:
   require_approval_for: [write_file, commit, push, open_pr]

@@ -83,6 +83,26 @@ class QdrantRetriever:
             ]
             self._client.upsert(collection_name=self.collection, points=points)
 
+    def delete(self, paths: list[str]) -> None:
+        if not paths or not self._client.collection_exists(self.collection):
+            return
+        with _tracer.start_as_current_span("retriever.delete") as span:
+            span.set_attribute("retriever.collection", self.collection)
+            span.set_attribute("retriever.delete.path_count", len(paths))
+            self._client.delete(
+                collection_name=self.collection,
+                points_selector=qmodels.FilterSelector(
+                    filter=qmodels.Filter(must=[qmodels.FieldCondition(key="path", match=qmodels.MatchAny(any=paths))])
+                ),
+            )
+
+    def clear(self) -> None:
+        with _tracer.start_as_current_span("retriever.clear") as span:
+            span.set_attribute("retriever.collection", self.collection)
+            if self._client.collection_exists(self.collection):
+                self._client.delete_collection(self.collection)
+            self._ensured = False
+
     def search(self, query: str, k: int = 8, **filters) -> list[Chunk]:
         with _tracer.start_as_current_span("retriever.search") as span:
             span.set_attribute("retriever.collection", self.collection)
