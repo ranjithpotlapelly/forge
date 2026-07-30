@@ -48,3 +48,9 @@ nest-asyncio>=1.5
 # A direct HTTP call, not an SDK: PyGithub/ghapi would be unused overhead for
 # one endpoint (POST /repos/{owner}/{repo}/pulls).
 requests>=2.31
+
+# --- Optional: Qdrant alternative retriever (adapters/retriever_qdrant.py) ---
+# Only imported when retriever.adapter: qdrant is set (default stays chroma).
+# Supports both a running Qdrant server and embedded/on-disk mode, no server
+# required either way.
+qdrant-client>=1.9

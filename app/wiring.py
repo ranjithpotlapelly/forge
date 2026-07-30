@@ -49,19 +49,33 @@ def build_answer_model(cfg: dict) -> LLMClient:
 def build_code_model(cfg: dict) -> LLMClient:
     return _build_llm_from_section(cfg["code_model"], cfg)
 
+def _build_semantic_retriever(section: dict, cfg: dict):
+    adapter = section["adapter"]
+    embed_model = cfg["embeddings"]["model"]
+    host = cfg["embeddings"].get("host", cfg["llm"]["host"])
+    if adapter == "chroma":
+        from adapters.retriever_chroma import ChromaRetriever
+        return ChromaRetriever(
+            path=section["path"],
+            collection=section["collection"],
+            embed_model=embed_model,
+            host=host,
+        )
+    if adapter == "qdrant":
+        from adapters.retriever_qdrant import QdrantRetriever
+        return QdrantRetriever(
+            url=section.get("qdrant_url") or None,
+            path=section.get("qdrant_path", "./.data/qdrant"),
+            collection=section.get("qdrant_collection", "forge_code_qdrant"),
+            embed_model=embed_model,
+            host=host,
+        )
+    raise ValueError(f"Unknown retriever adapter: {adapter}")
+
 def build_retriever(cfg: dict) -> Retriever:
     section = cfg["retriever"]
-    adapter = section["adapter"]
-    if adapter != "chroma":
-        raise ValueError(f"Unknown retriever adapter: {adapter}")
-    from adapters.retriever_chroma import ChromaRetriever
     from adapters.retriever_hybrid import HybridRetriever
-    semantic = ChromaRetriever(
-        path=section["path"],
-        collection=section["collection"],
-        embed_model=cfg["embeddings"]["model"],
-        host=cfg["embeddings"].get("host", cfg["llm"]["host"]),
-    )
+    semantic = _build_semantic_retriever(section, cfg)
     return HybridRetriever(semantic=semantic, lexical_path=section.get("lexical_path", "./.data/lexical.db"))
 
 def build_engine(cfg: dict, llm: LLMClient | None = None, retriever: Retriever | None = None) -> Engine:

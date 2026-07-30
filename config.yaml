@@ -59,8 +59,16 @@ embeddings:
 
 retriever:
   adapter: chroma              # -> adapters/retriever_chroma.py (semantic half, embedded, no server)
+                                # Alternative: qdrant -> adapters/retriever_qdrant.py (same Retriever port,
+                                # same skeleton-index contract -- proof the port supports swapping vector
+                                # stores without touching core/, product/, or app/ask.py). Local Qdrant
+                                # only: set qdrant_url (running server) or leave it blank to use
+                                # qdrant_path (embedded/on-disk, no server needed) -- url wins if both are set.
   path: ./.data/chroma
   collection: forge_code
+  qdrant_url: ${QDRANT_URL}       # e.g. http://localhost:6333 for `docker run qdrant/qdrant`; from .env
+  qdrant_path: ./.data/qdrant     # embedded/on-disk mode, used when qdrant_url is blank
+  qdrant_collection: forge_code_qdrant  # separate name from `collection` (Chroma's) so the two indexes never collide
   top_k: 8  # tried raising this to 15 after a real miss (shell.component.ts
             # ranked 13th for "dark mode toggle button" -- semantic-only
             # search is weak on whole-file JS/TS chunks) -- but task_retrieve
