@@ -330,7 +330,7 @@ at most, one new adapter file.
 | Layer | Baseline (free) | Upgrade | Trigger |
 |---|---|---|---|
 | Reasoning | Ollama, local CPU | Hosted, OpenAI-compatible API (Phase 22, `adapters/llm_openai_compatible.py`) — **already applied to `code_model`** in `config.yaml` today (`adapter: openai_compatible`, an OpenRouter fallback chain); `llm`/`answer_model` are still on Ollama and can be swapped the same way | Speed/quality — this one's done, per-port |
-| Retrieval | ChromaDB embedded | Qdrant (on-disk + quantized) | Past ~200-300k chunks |
+| Retrieval | ChromaDB embedded | Qdrant — **already available**, `adapters/retriever_qdrant.py`, same `Retriever` port/contract; flip `retriever.adapter: qdrant` in `config.yaml` (still defaults to `chroma`) | Past ~200-300k chunks, or just want Qdrant's on-disk/quantized options |
 | State | SQLite | PostgreSQL | Concurrent users |
 | Observability | Phoenix (Docker, local) | Hosted Phoenix/tracing | Team needs shared access |
 | Interface | Chainlit | Next.js | Real product UI |
@@ -412,6 +412,10 @@ Run from the repo root. This is a Docker Compose stack, not a native
 order: Ollama (native host process — starts it if not already running),
 Phoenix (`http://localhost:6006`), then Forge itself (`http://localhost:8010`),
 verifying each is actually reachable before starting the next.
+
+Setting this up on a different machine? `docs/TEAM_SETUP.md` is the
+condensed, Docker-first walkthrough for that — this section assumes you're
+already set up and explains how to use it day to day.
 
 **B. Index a codebase**
 
@@ -568,3 +572,18 @@ architectural decisions, plus two things the plan never saw coming at all.
   `CODE_MODEL_NAME`/`CODE_MODEL_API_KEY`/etc. in `.env` and the code-edit
   step of the task path silently doesn't work — see `README.md`'s "Upgrade
   path" section for the actual config shape and how to revert it to Ollama.
+
+**Additive extras since Phase 23 (not numbered phases — off by default, no
+protected file touched):**
+
+- **`notify_slack` tool** (`adapters/tool_slack.py`) — an optional Slack
+  ping ("task complete", "PR opened: `<url>`") at a task run's natural end
+  points, wired through `core.tools.Tool` like any other tool. No-op unless
+  `SLACK_WEBHOOK_URL` is set; a failed post is caught and logged, never
+  raised, so it can't fail the run it's reporting on. See README's
+  "Optional add-ons" section.
+- **Qdrant retriever** (`adapters/retriever_qdrant.py`) — a sibling to
+  `retriever_chroma.py` behind the same `Retriever` port, same
+  skeleton-index contract, proving the port genuinely supports swapping
+  vector stores. `retriever.adapter` still defaults to `chroma`. See the
+  Upgrade path table (Section 8) and README's "Optional add-ons" section.

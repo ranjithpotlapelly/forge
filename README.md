@@ -10,6 +10,10 @@ Built on a swappable-by-design architecture: every layer (model, retrieval,
 state, tools, tracing) sits behind a small interface, so the `$0` local stack
 upgrades to hosted services one file at a time.
 
+> **Setting this up on a teammate's machine?** [docs/TEAM_SETUP.md](docs/TEAM_SETUP.md)
+> is the condensed, Docker-first version of everything below — 10-15
+> minutes, no architecture explanation. Come back here for the *why*.
+
 ---
 
 ### 1. Install Ollama and start it
@@ -194,6 +198,34 @@ same adapter works for `llm:` too (any slot typed `core.llm.LLMClient`), if
 you'd rather upgrade reasoning quality, or revert `code_model` to Ollama by
 changing `adapter: openai_compatible` back to `adapter: ollama` and adding
 a `model:` field (e.g. `qwen3-coder`) instead of `models:`.
+
+---
+
+## Optional add-ons
+
+Both off by default — nothing about existing behavior changes unless you
+opt in. Neither touches `core/` or any protected file; each is a sibling
+adapter behind an existing port.
+
+**Slack notifications** (`adapters/tool_slack.py`) — a CPU-bound task can
+take minutes; set `SLACK_WEBHOOK_URL` in `.env` (a Slack Incoming Webhook
+URL) and Forge posts a short status line ("task complete", "PR opened:
+&lt;url&gt;") at the end of a run. Leave it blank and `notify_slack` is a
+silent no-op — a failed post is caught and logged, never raised, so it can't
+fail a task either way.
+
+**Qdrant retriever** (`adapters/retriever_qdrant.py`) — an alternative to
+the default embedded Chroma, behind the same `core.retriever.Retriever`
+port, same skeleton-index contract (full chunk text + path/start_line/
+end_line/symbol metadata), same Ollama embedder. Switch to it with:
+```yaml
+retriever:
+  adapter: qdrant       # was: chroma
+  qdrant_url: ${QDRANT_URL}       # a running server, e.g. docker run qdrant/qdrant
+  qdrant_path: ./.data/qdrant     # or: embedded/on-disk mode, no server needed (used when qdrant_url is blank)
+```
+Re-index after switching — Chroma and Qdrant don't share data. `adapter:
+chroma` stays the default; nothing needs to change unless you flip this.
 
 ---
 
