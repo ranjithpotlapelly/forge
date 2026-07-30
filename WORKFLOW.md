@@ -430,27 +430,34 @@ in-repo path this is trivial (e.g. `/index .`), but a path outside the
 container needs a bind mount added to `docker-compose.yml`'s `forge`
 service first (`- C:/some/host/path:/mnt/host_projects:ro`), then
 `/index /mnt/host_projects/...`. This walks the path, chunks `.py`/`.js`/
-`.ts`/`.go` files per top-level function/class (whole-file for non-Python —
-no per-symbol chunker exists for those languages), and writes them into
-Chroma. **This only affects Q&A** — see the callout in Section 1 about why
-it doesn't retarget the task path.
+`.ts`/`.go`/`.java` files per top-level function/class (whole-file for
+everything except Python — no per-symbol chunker exists for the others),
+and writes them into Chroma. **This only affects Q&A** — see the callout
+in Section 1 about why it doesn't retarget the task path.
 
-**`/index`ing the same path again after `repo_path` changes creates
-duplicates, not updates.** `product/indexing.py:index_repo()` only ever
-calls `retriever.add()` — there's no clearing or upsert-by-changed-path
-logic. Each chunk's id is a hash of `path:start_line:symbol` (`adapters/
-_doc_id.py`), so if the *same file's* indexed `path` string changes (e.g.
-`repo_path` moves and everything gets a new prefix), the old chunks aren't
-recognized as stale versions of the new ones — they just accumulate
-alongside them, diluting retrieval with dead, unreachable paths. If you
-change `repo_path`, clear both stores before re-indexing rather than just
-running `/index` again:
-```python
-import chromadb
-client = chromadb.PersistentClient(path=cfg["retriever"]["path"])
-client.delete_collection(name=cfg["retriever"]["collection"])
-# and DELETE FROM lexical in cfg["retriever"]["lexical_path"]'s sqlite file
-```
+Two more forms, both additive since the original `/index <path>`:
+
+- `/index <path> --changed` — reindexes only files that differ from `HEAD`
+  in the working tree (`adapters/ingest_fs.py:changed_paths()`, via `git
+  diff --name-status HEAD` + `git ls-files --others`), and purges deleted
+  files' chunks via `Retriever.delete(paths)`. Much faster than a full walk
+  once a repo's already indexed — use it right before a commit so the index
+  reflects what you're about to commit without re-embedding everything else.
+  Same flag works from the CLI: `python -m app.index <path> --changed`.
+- `/index --clear` — wipes the entire index (`Retriever.clear()`, every
+  adapter: Chroma/Qdrant/FTS/Hybrid), behind an `AskActionMessage`
+  confirmation (same pattern as deleting a conversation thread).
+
+**`/index`ing the same path twice under two *different* root paths for the
+same repo still creates duplicates, not updates** — this bit us for real:
+`/index` had been run against both a repo's git root and its app subfolder
+one level down, and since Chroma path metadata is relative to whatever path
+was passed in, every file ended up indexed twice under different prefixes
+(`repo/src/...` vs `src/...`), both permanently retrievable. `Retriever`'s
+`delete()`/`clear()` only dedup an *exact* repeated path — this cross-root
+case isn't caught automatically. If it happens, `/index --clear` then a
+single clean `/index <the-one-true-path>` fixes it; going forward, always
+index the same root (match `forge.repo_path`) and never a subfolder of it.
 
 **C. Ask a question about the code**
 
@@ -489,7 +496,7 @@ any errors.
 | `push`/`open_pr` fails with a git object-directory error | `forge.repo_path`'s host directory is bind-mounted read-only (`:ro`) — Forge's sandbox clone can commit fine, but can't push back into a read-only source. Either make the mount read-write, or treat push as a manual step done outside Forge once tests pass |
 | A JS/TS `run_tests` step needs a browser | The image installs `nodejs`/`npm`/`chromium` and sets `CHROME_BIN`; a project's own `npm test` still needs its own karma/jasmine (or equivalent) config and devDependencies — Forge doesn't scaffold those for you |
 | `prepare_workspace` fails with "is not a git repository" | `repo_path` isn't the exact directory containing `.git` — check `git rev-parse --show-toplevel` on the real repo and point `repo_path` at that, even if it's not where `package.json`/`pom.xml` lives (`run_tests` searches one level down for those on its own) |
-| A plan targets the wrong file for an obviously-relevant query | Check both retriever halves directly: `retriever.search(query, k=...)` (semantic+lexical fused) and, if it's a non-Python file, whether the literal text you expect is even in a *content*-indexed column — `adapters/retriever_fts.py`'s FTS5 table only started indexing `content` (not just `symbol`/`signature`/`path`) after a real miss; a stale index built before that fix, or one with duplicate stale-path entries from a `repo_path` change, won't have this signal until you clear and re-`/index` |
+| A plan targets the wrong file for an obviously-relevant query | Check both retriever halves directly: `retriever.search(query, k=...)` (semantic+lexical fused) and, if it's a non-Python file, whether the literal text you expect is even in a *content*-indexed column — `adapters/retriever_fts.py`'s FTS5 table only started indexing `content` (not just `symbol`/`signature`/`path`) after a real miss; a stale index built before that fix, or one with duplicate stale-path entries from indexing two different roots of the same repo, won't have this signal until you `/index --clear` and re-`/index` |
 
 ## 12. Recommendations
 
@@ -587,3 +594,10 @@ protected file touched):**
   skeleton-index contract, proving the port genuinely supports swapping
   vector stores. `retriever.adapter` still defaults to `chroma`. See the
   Upgrade path table (Section 8) and README's "Optional add-ons" section.
+- **`/index --changed` and `/index --clear`** (Section 11B) — incremental
+  reindex and full wipe, on top of the original full-walk `/index <path>`
+  (unchanged, still the default). Needed a small port addition,
+  `Retriever.delete(paths)`/`Retriever.clear()`, implemented on every
+  retriever adapter (Chroma/Qdrant/FTS/Hybrid) — see
+  `app/incremental_index_smoke_test.py`. Java (`.java`) joined the indexed
+  languages at the same time.
