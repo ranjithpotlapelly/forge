@@ -115,6 +115,12 @@ github:
   api_base: https://api.github.com
   repo: ranjithpotlapelly/forge  # owner/name fetch_issue reads issues from -- never hardcoded in the adapter
 
+# --- Optional Slack "done" notifications (additive, default off) ---
+# -> adapters/tool_slack.py. With no SLACK_WEBHOOK_URL in .env this expands to
+# "" and notify_slack silently no-ops -- default behaviour is unchanged.
+slack:
+  webhook_url: ${SLACK_WEBHOOK_URL}
+
 # --- Forge product settings ---
 forge:
   repo_path: "/mnt/host_projects/rag-frontend-angular-v2"  # local checkout the task/edit/test pipeline targets (prepare_workspace/run_tests) -- NOT the same as whatever /index was last pointed at, which only widens Q&A retrieval. This is the real git root (matches ranjithpotlapelly/rag-frontend exactly -- .git lives here, not one level down); the Angular app itself is a subfolder (rag-frontend/) of this repo upstream, which is why it's not repo_path itself. run_tests' marker detection searches one level down for exactly this reason.

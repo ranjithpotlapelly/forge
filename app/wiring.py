@@ -85,6 +85,7 @@ def build_engine(cfg: dict, llm: LLMClient | None = None, retriever: Retriever |
             commit_tool=tools.get("commit"),
             push_tool=tools.get("push"),
             open_pr_tool=tools.get("open_pr"),
+            notify_tool=tools.get("notify_slack"),
             plan_fn=make_plan,
             apply_plan_fn=apply_plan,
             commit_fn=commit_changes,
@@ -143,6 +144,7 @@ def build_tools(cfg: dict) -> list[Tool]:
     )
     tools.append(build_open_pr_tool(cfg, require_approval_for))
     tools.append(build_fetch_issue_tool(cfg))
+    tools.append(build_notify_slack_tool(cfg))
     return tools
 
 def build_open_pr_tool(cfg: dict, require_approval_for: set[str] | None = None) -> Tool:
@@ -162,6 +164,13 @@ def build_fetch_issue_tool(cfg: dict) -> Tool:
         token=cfg["github"]["token"],
         api_base=cfg["github"].get("api_base", "https://api.github.com"),
     )
+
+def build_notify_slack_tool(cfg: dict) -> Tool:
+    """Additive, default-off (Phase: Slack notifications): webhook_url is ""
+    unless SLACK_WEBHOOK_URL is set in .env, in which case the tool itself
+    is a silent no-op -- see adapters/tool_slack.py."""
+    from adapters.tool_slack import SlackNotifyTool
+    return SlackNotifyTool(webhook_url=cfg.get("slack", {}).get("webhook_url", ""))
 
 def build_ingest(cfg: dict, repo_path: str | None = None) -> IngestSource:
     """repo_path overrides forge.repo_path -- used by the /index command and

@@ -473,7 +473,19 @@ def route_after_pr_approval(state: GraphState) -> str:
 def pr_rejected_node(state: GraphState) -> GraphState:
     return {}  # pr_rejection_reason already set by pr_approval_gate_node
 
-def open_pr_node(state: GraphState, config: RunnableConfig, open_pr_fn: Callable[..., Any], open_pr_tool: Tool) -> GraphState:
+def _notify(tool: Tool | None, message: str) -> None:
+    """Best-effort Slack ping (adapters/tool_slack.py) at a task's natural end
+    points. tool is None unless a webhook is configured (see
+    app/wiring.py:build_notify_slack_tool) -- and even then, a failure here
+    must never fail the run it's reporting on."""
+    if not tool:
+        return
+    try:
+        tool.run(message=message)
+    except Exception as e:  # noqa: BLE001 — a failed notification must never fail the task
+        print(f"notify_slack failed: {e}")
+
+def open_pr_node(state: GraphState, config: RunnableConfig, open_pr_fn: Callable[..., Any], open_pr_tool: Tool, notify_tool: Tool | None = None) -> GraphState:
     plan = state["plan"]
     head = state.get("workspace_branch", "main")
     _emit(config, "Opening pull request...")
@@ -481,6 +493,7 @@ def open_pr_node(state: GraphState, config: RunnableConfig, open_pr_fn: Callable
         url = open_pr_fn(open_pr_tool, plan.title, plan.body, "main", head)
         print(f"\n=== PR opened ===\n{url}")
         _emit(config, f"PR opened: {url}")
+        _notify(notify_tool, f"PR opened: {url}")
         return {"pr_result": {"status": "ok", "url": url}}
     except Exception as e:  # noqa: BLE001 — can't import the specific open_pr-tool exception type here
         print(f"\n=== open_pr failed ===\n{e}")
@@ -509,6 +522,7 @@ class LangGraphEngine:
         commit_tool: Tool | None = None,
         push_tool: Tool | None = None,
         open_pr_tool: Tool | None = None,
+        notify_tool: Tool | None = None,
         plan_fn: Callable[..., Any] | None = None,
         apply_plan_fn: Callable[..., Any] | None = None,
         commit_fn: Callable[..., Any] | None = None,
@@ -524,6 +538,7 @@ class LangGraphEngine:
         self.read_tool, self.write_tool, self.prepare_tool = read_tool, write_tool, prepare_tool
         self.run_tests_tool, self.commit_tool = run_tests_tool, commit_tool
         self.push_tool, self.open_pr_tool = push_tool, open_pr_tool
+        self.notify_tool = notify_tool
         self.plan_fn, self.apply_plan_fn = plan_fn, apply_plan_fn
         self.commit_fn, self.push_fn, self.open_pr_fn = commit_fn, push_fn, open_pr_fn
         self.rollback_fn = rollback_fn
@@ -577,7 +592,7 @@ class LangGraphEngine:
         g.add_node("push_failed", _instrumented("push_failed", push_failed_node))
         g.add_node("pr_gate", _instrumented("pr_gate", pr_approval_gate_node))
         g.add_node("pr_rejected", _instrumented("pr_rejected", pr_rejected_node))
-        g.add_node("open_pr", _instrumented("open_pr", partial(open_pr_node, open_pr_fn=self.open_pr_fn, open_pr_tool=self.open_pr_tool)))
+        g.add_node("open_pr", _instrumented("open_pr", partial(open_pr_node, open_pr_fn=self.open_pr_fn, open_pr_tool=self.open_pr_tool, notify_tool=self.notify_tool)))
         g.add_node("give_up", _instrumented("give_up", partial(give_up_node, rollback_fn=self.rollback_fn, write_tool=self.write_tool)))
 
         g.set_entry_point("classify_intent")
@@ -710,6 +725,7 @@ class LangGraphEngine:
                 return result  # run_history row stays 'running' -- resume_task() finishes it
             if self.run_history and run_id:
                 self.run_history.finish_run(run_id, "completed")
+            _notify(self.notify_tool, "task complete")
             span.set_attribute("engine.approved", bool(result.get("approved")))
             span.set_attribute("engine.attempts", result.get("attempt", 1))
             return result
@@ -753,6 +769,7 @@ class LangGraphEngine:
                 return result  # paused again at the next gate (e.g. pr_gate after approving the plan)
             if self.run_history and run_id:
                 self.run_history.finish_run(run_id, "completed")
+            _notify(self.notify_tool, "task complete")
             span.set_attribute("engine.approved", bool(result.get("approved")))
             return result
 
