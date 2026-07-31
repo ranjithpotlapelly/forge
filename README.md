@@ -350,8 +350,16 @@ Phase 10 fills a gap left open since Phase 3: `core/ingest.py` was scaffolded
 in Phase 1 but never implemented — every earlier phase indexed 3 hardcoded
 test documents instead of real code. `adapters/ingest_fs.py` now walks a
 repo and yields real per-function/class chunks via Python's stdlib `ast`
-(not tree-sitter — dropped in Phase 9 as an unused dependency, and `ast`
-already does the job for the language this repo is written in).
+(not tree-sitter for Python — dropped in Phase 9 as an unused dependency,
+and `ast` already does the job for Python). Tree-sitter came back later for
+JavaScript, TypeScript, and Java once the project's actual daily-driver
+target repo became an Angular/TypeScript app (Go was left on whole-file
+chunking — not an active target repo):
+`adapters/ingest_fs.py`'s `_ts_chunks` gives them the same per-method chunk
+granularity Python has, walking into class/interface bodies since a typical
+Angular component or Java class puts nearly all its code inside one class
+per file — chunking only at class granularity wouldn't have actually fixed
+anything for those two languages specifically.
 
 Phase 11 fills the other gap `code_model` had sat reserved for since Phase
 2: `product/code_edit.py` asks it for a full replacement file and applies it

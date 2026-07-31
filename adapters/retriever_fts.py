@@ -59,10 +59,36 @@ _BM25_WEIGHTS = (0.0, 5.0, 2.0, 1.0, 0.5, 0.0)
 _PATH_SEP_RE = re.compile(r"[/\\._-]")
 
 def _signature(content: str) -> str:
-    """The chunk's def/class header: its first non-blank line."""
+    """The chunk's def/class header: its first non-blank, non-comment line.
+
+    adapters/ingest_fs.py's tree-sitter chunker includes a chunk's leading
+    doc-comment (JSDoc/Javadoc/godoc), if any, for retrieval quality --
+    otherwise that text (often the most semantically descriptive line in the
+    whole chunk) would be silently dropped. But that means the OLD "first
+    non-blank line = the signature" rule now often returns the comment
+    opener (`/**`, useless on its own) instead of the real declaration, or
+    for a single-line doc comment, the whole comment instead of the
+    declaration it documents -- either way losing the real signature this
+    column exists for, and for the single-line case, corrupting BM25 ranking
+    by asymmetrically over-weighting whichever chunk's doc comment happens
+    to share words with the query. Skip comment lines (// or /* ... */,
+    single- or multi-line) to find the real first code line instead."""
+    in_block_comment = False
     for line in content.splitlines():
-        if line.strip():
-            return line.strip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if in_block_comment:
+            if stripped.endswith("*/"):
+                in_block_comment = False
+            continue
+        if stripped.startswith("/*"):
+            if not stripped.endswith("*/"):
+                in_block_comment = True
+            continue
+        if stripped.startswith("//"):
+            continue
+        return stripped
     return ""
 
 def _path_words(path: str) -> str:

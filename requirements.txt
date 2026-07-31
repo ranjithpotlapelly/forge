@@ -5,6 +5,8 @@
 # Phase 9 notes: this used to carry llama-index/tree-sitter (Phase 3 went a
 # different direction: chromadb + raw ollama embeddings, no llama-index) and
 # the full arize-phoenix package (Phase 6 hit a hard build blocker — see below).
+# tree-sitter came back later (see the ingest section below) for non-Python
+# per-symbol chunking; Python itself still uses stdlib ast, not tree-sitter.
 
 # --- Phase 1: scaffold (needed to run the smoke test) ---
 pyyaml>=6.0
@@ -54,3 +56,15 @@ requests>=2.31
 # Supports both a running Qdrant server and embedded/on-disk mode, no server
 # required either way.
 qdrant-client>=1.9
+
+# --- Ingest: tree-sitter per-method chunking for JS/TS/Java ---
+# Single-language wheels only, NOT tree-sitter-language-pack — that one fails
+# to build on Windows. Python keeps using stdlib ast (adapters/ingest_fs.py's
+# _python_chunks); these grammars back _ts_chunks for every other configured
+# language, giving them the same per-function/class chunk granularity Python
+# already had, instead of one whole-file chunk per file. Go isn't an active
+# target repo, so it stays on whole-file chunking -- no tree-sitter-go here.
+tree-sitter>=0.23
+tree-sitter-javascript>=0.23
+tree-sitter-typescript>=0.23
+tree-sitter-java>=0.23

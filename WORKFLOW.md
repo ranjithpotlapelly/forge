@@ -541,23 +541,75 @@ architectural decisions, plus two things the plan never saw coming at all.
   round of fixes was the proof.
 - **Knowledge layer: LlamaIndex + Chroma → raw Ollama embeddings + Chroma.**
   LlamaIndex sat in `requirements.txt` unused; Phase 9 removed it.
-- **Chunking: tree-sitter → stdlib `ast`, Python-only.** Same structure-aware
-  result for Python, no extra dependency (Phase 10). Non-Python languages
-  (`.js`/`.ts`/`.go`) still get whole-file chunks — no per-symbol chunker
-  was ever added for them. This has a real, measured cost: whole-file
-  chunks get a placeholder `symbol` (`"<file>"`) and a useless first-line
-  `signature`, so `adapters/retriever_fts.py`'s lexical index — originally
-  `symbol`/`signature`/`path` only — had *no* content-based signal for any
-  JS/TS/Go file, just filename matching. A real task surfaced this: a query
-  containing the literal text of a button's `title` attribute in
-  `shell.component.ts` returned zero lexical hits and didn't rank in the
-  fused top-8, purely because that text lived in the one column
-  (`content`) the FTS5 table left `UNINDEXED`. Fixed by indexing `content`
-  at a low BM25 weight (0.5, well under `symbol`'s 5.0) — low enough to
-  barely move Python chunks' already-good ranking, high enough to give
-  whole-file chunks a real content-based signal for the first time. The
-  per-symbol-chunking gap itself is still open; this only mitigates its
-  lexical-search consequence.
+- **Chunking: tree-sitter → stdlib `ast`, Python-only** (Phase 10), **then
+  tree-sitter came back for JS/TS/Java specifically** (Phase 10 extended,
+  once the project's actual daily-driver target repo became the Angular/TypeScript
+  `rag-frontend-angular-v2` and a Java repo started getting indexed
+  periodically too — Go was considered too, but isn't an active target repo,
+  so it deliberately stays on whole-file chunking rather than adding a
+  grammar nothing currently needs). Whole-file-only chunking for JS/TS/Java
+  had a concrete cost beyond retrieval: `product/code_edit.py`'s edit step
+  could only scope an edit to a whole file (often ~one class per file in
+  both languages), not one method — every edit meant regenerating the entire
+  file. `adapters/ingest_fs.py`'s `_ts_chunks` now gives JS/TS/Java the
+  same per-method/function chunk granularity Python already had via
+  `_python_chunks`, walking one level into class/interface bodies since a
+  typical Angular component or Java class puts nearly all its code inside
+  one class per file (class-level-only chunking would have collapsed right
+  back to whole-file size for exactly these two languages). Two real-repo
+  bugs caught only by testing against the actual indexed repo, not the
+  isolated unit tests: (1) `export class Foo {}` — virtually all real
+  Angular/TS code — parses as an `export_statement` wrapping the actual
+  `class_declaration`, so without unwrapping it nothing matched and 0
+  chunks came out; (2) Angular's modern functional-guard/interceptor
+  pattern (`export const authGuard: T = (route, state) => {...}`) is a
+  `lexical_declaration` bound to an arrow function, not a
+  `function_declaration`, and needed its own extraction path.
+
+  Before this, non-Python languages got a placeholder `symbol` (`"<file>"`)
+  and a useless first-line `signature`, so `adapters/retriever_fts.py`'s
+  lexical index — originally `symbol`/`signature`/`path` only — had *no*
+  content-based signal for any JS/TS file, just filename matching. A real
+  task surfaced this: a query containing the literal text of a button's
+  `title` attribute in `shell.component.ts` returned zero lexical hits and
+  didn't rank in the fused top-8, purely because that text lived in the one
+  column (`content`) the FTS5 table left `UNINDEXED`. Fixed by indexing
+  `content` at a low BM25 weight (0.5, well under `symbol`'s 5.0) — low
+  enough to barely move Python chunks' already-good ranking, high enough to
+  give whole-file chunks a real content-based signal for the first time.
+
+  **`_ts_chunks` also attaches a chunk's leading doc-comment (JSDoc/Javadoc)
+  when present**, since dropping it would lose exactly the kind of
+  high-signal text (`/** Attaches the JWT to every request... */`) that made
+  whole-file chunks retrieve correctly before. That surfaced a real bug in
+  `_signature()` (`adapters/retriever_fts.py`): it took "the chunk's first
+  non-blank line" as the searchable `signature` column (BM25 weight 2.0,
+  second only to `symbol`'s 5.0) — with a leading comment now included, that
+  first line became the comment opener (`/**`, no useful terms) for
+  multi-line doc comments, or the *entire* doc comment for single-line ones,
+  either way replacing the real declaration line `signature` exists to
+  capture, and in the single-line case actively corrupting ranking (whichever
+  chunk's doc comment happened to share words with the query got an
+  undeserved weight-2.0 boost). Fixed by making `_signature()` skip leading
+  `//`/`/* */`/`/** */` comment lines to find the real first code line.
+  Verified against `app/ingest_smoke_test.py`'s two hardcoded auth-code
+  queries: the auth-guard query passes; the auth-interceptor query still
+  ranks `AuthService.getRole` above `authInterceptor` in the hybrid-fused
+  top-1 despite `authInterceptor` scoring higher semantically (0.29 vs
+  0.20) — RRF gives the two an *exactly tied* fused score (their semantic
+  and lexical ranks are simply swapped, 1↔2, between the two sub-searches),
+  and the tie-break rule in `adapters/retriever_hybrid.py`'s `sort_key`
+  explicitly favors the better lexical rank, which `getRole` narrowly wins
+  even after the signature fix (its remaining lexical edge is now just
+  content-column term-frequency/length-normalization noise, not a bug).
+  That tie-break rule exists deliberately, for a good reason (an identifier-
+  shaped query like "where is validateToken called?" should trust an exact
+  lexical match over fuzzy cosine similarity) — but it doesn't distinguish
+  that case from a natural-language question with weak, incidental lexical
+  overlap, where semantic score is the more trustworthy signal. Changing it
+  risks regressing the exact-match case it was built for, so it's left
+  as-is: a known, narrow, well-diagnosed open question, not a bug to chase
+  further here.
 - **State: one SQLite file → two.** `.data/forge.db` (`run_history`'s
   `runs`/`run_steps`, Phase 19) and `.data/checkpoints.db` (LangGraph's
   checkpointer) were never merged into the plan's single-file vision.
