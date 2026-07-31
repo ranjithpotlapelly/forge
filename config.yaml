@@ -51,6 +51,12 @@ code_model:
     - ${CODE_MODEL_FALLBACK_2}
   base_url: ${CODE_MODEL_BASE_URL}
   api_key: ${CODE_MODEL_API_KEY}    # from .env; never hardcode, never logged
+  # Billing guard (adapters/llm_openai_compatible.py): refuses to start if
+  # any configured model above lacks OpenRouter's ":free" suffix, unless
+  # this is explicitly flipped to true. Real safety net is a hard credit
+  # limit on the OpenRouter key itself (openrouter.ai/keys) -- this is a
+  # trip-wire against an accidental config change, not a replacement for that.
+  allow_paid_models: false
 
 # --- Knowledge (Phase 3) ---
 embeddings:
