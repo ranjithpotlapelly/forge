@@ -25,43 +25,15 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-
-import yaml
 
 from app.config_loader import load_config
 from app.wiring import build_retriever
 from core.retriever import Retriever
 from core.types import Chunk
-
-_DEFAULT_DATASET = Path(__file__).parent / "dataset.yaml"
-
-
-@dataclass
-class Case:
-    question: str
-    expect_files: list[str] = field(default_factory=list)
-    expect_symbols: list[str] = field(default_factory=list)
-
-    @staticmethod
-    def from_dict(d: dict) -> "Case":
-        if not d.get("question"):
-            raise ValueError(f"dataset case missing 'question': {d!r}")
-        if not d.get("expect_files"):
-            raise ValueError(f"case {d['question']!r} missing 'expect_files'")
-        return Case(
-            question=d["question"],
-            expect_files=list(d["expect_files"]),
-            expect_symbols=list(d.get("expect_symbols") or []),
-        )
-
-
-def load_dataset(path: Path) -> list[Case]:
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
-    if not isinstance(raw, list):
-        raise ValueError(f"{path}: expected a top-level list of cases")
-    return [Case.from_dict(d) for d in raw]
+from eval.dataset import DEFAULT_DATASET as _DEFAULT_DATASET
+from eval.dataset import Case, load_dataset
 
 
 def _is_relevant(chunk: Chunk, case: Case) -> bool:

@@ -21,6 +21,18 @@
 #                    (case-insensitive). When given, a hit additionally
 #                    requires a symbol match, not just the file -- use this to
 #                    pin down which chunk within a multi-chunk file counts.
+#   reference:       optional (Prompt 24, eval/judge.py only) -- a short
+#                    ground-truth note about the correct answer, checked by an
+#                    LLM judge against the generated answer + cited source. A
+#                    case with no `reference` is skipped by eval/judge.py
+#                    (nothing to check an answer against) but still scored by
+#                    eval/run.py as normal. Only a handful of cases have one
+#                    right now -- add more as you write them.
+#   force_answer:    optional (Prompt 24, eval/judge.py only) -- when set,
+#                    eval/judge.py judges this fixed text instead of actually
+#                    generating an answer. Exists so a known-bad answer can be
+#                    tested deterministically, without depending on a model
+#                    hallucinating on cue -- see the last case below.
 #
 # Add more cases as the indexed repo grows or the questions people actually
 # ask reveal a gap -- just append another list entry in this same shape.
@@ -28,14 +40,27 @@
 - question: "how does the app authenticate a user and store the auth token"
   expect_files: ["auth.service.ts"]
   expect_symbols: ["login", "storeToken"]
+  reference: >
+    AuthService.login() POSTs { username, password } to /auth/token, then
+    storeToken() saves the returned JWT to localStorage (and an in-memory
+    signal) under a fixed key. No cookies or server-side session are
+    involved.
 
 - question: "where is the http interceptor that attaches the auth token to outgoing requests"
   expect_files: ["auth.interceptor.ts"]
   expect_symbols: ["authInterceptor"]
+  reference: >
+    authInterceptor reads the JWT via AuthService.getToken() and attaches it
+    as an "Authorization: Bearer <token>" header on every outgoing request.
+    On a 401 response it calls auth.logout() and redirects to /login.
 
 - question: "what guard prevents unauthenticated users from accessing protected routes"
   expect_files: ["auth.guard.ts"]
   expect_symbols: ["authGuard"]
+  reference: >
+    authGuard is a CanActivateFn: it allows navigation only when
+    AuthService.isLoggedIn() is true, otherwise it redirects to /login and
+    returns false to block the route.
 
 - question: "how does the chat component send a question to the backend"
   expect_files: ["chat.component.ts"]
@@ -56,10 +81,18 @@
 - question: "what happens when the user logs out from the app shell"
   expect_files: ["shell.component.ts"]
   expect_symbols: ["logout"]
+  reference: >
+    ShellComponent.logout() calls AuthService.logout() -- which clears the
+    stored JWT from localStorage and resets the in-memory token signal --
+    then navigates to /login.
 
 - question: "where is checkout for billing plans implemented"
   expect_files: ["rag.service.ts"]
   expect_symbols: ["checkout"]
+  reference: >
+    RagService.checkout(tenantId, plan) POSTs { tenantId, plan } to
+    /billing/checkout and returns an Observable of { checkoutUrl } for the
+    caller to redirect to. It doesn't process payment itself.
 
 - question: "what typescript interfaces define the query request and response shapes"
   expect_files: ["models.ts"]
@@ -68,3 +101,22 @@
 - question: "how does the signup form submit a new user"
   expect_files: ["signup.component.ts"]
   expect_symbols: ["submit"]
+
+# --- eval/judge.py discrimination check (Prompt 24 acceptance check) -------
+# Same question/citations as the first case above, but force_answer swaps in
+# a deliberately wrong, ungrounded answer -- the cited source (auth.service.ts)
+# uses a JWT stored in localStorage, not a cookie/Redis session, so a
+# correctly-functioning judge must score this low on groundedness (and
+# correctness). If it doesn't, the judge harness itself is broken.
+- question: "how does the app authenticate a user and store the auth token"
+  expect_files: ["auth.service.ts"]
+  expect_symbols: ["login", "storeToken"]
+  reference: >
+    AuthService.login() POSTs { username, password } to /auth/token, then
+    storeToken() saves the returned JWT to localStorage (and an in-memory
+    signal) under a fixed key. No cookies or server-side session are
+    involved.
+  force_answer: >
+    The app authenticates the user by storing their password in a
+    server-side session cookie and validating it against a Redis session
+    store on every request. No JWT is used anywhere in this flow.
