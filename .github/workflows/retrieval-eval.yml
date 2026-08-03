@@ -1,0 +1,50 @@
+name: Retrieval eval
+
+# Regression gate for retrieval quality -- see eval/run.py. Runs the fixed
+# eval/dataset.yaml question set against whatever's already indexed in
+# ./.data/chroma (+ ./.data/lexical.db) and fails the job if hit@k drops
+# below eval/run.py's --min-hit-at-k default (0.7).
+#
+# Requires a self-hosted runner on a machine that already has:
+#   - `ollama serve` running (embeddings; see README.md step 1-2)
+#   - a repo indexed via `python -m app.index` (see README.md / WORKFLOW.md)
+# There's no GitHub-hosted-runner path for this job: the index and the
+# embedding model are both local state (.data/, .env are gitignored -- see
+# .gitignore) that a stock ubuntu-latest runner starts without and has no
+# way to build in-job without also standing up Ollama and re-indexing a
+# fixture repo from scratch on every run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  retrieval-eval:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Default checkout does `git clean -ffdx`, which would delete the
+          # gitignored .venv/, .env, and .data/ (the Chroma index + lexical
+          # DB) this job depends on. Keep them across runs; checkout still
+          # updates every tracked file (eval/, core/, config.yaml, ...) to
+          # the commit under test.
+          clean: false
+
+      - name: Set up Python environment
+        shell: pwsh
+        run: |
+          if (-not (Test-Path .venv)) {
+            python -m venv .venv
+          }
+          .venv\Scripts\python.exe -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Retrieval regression gate (hit@k)
+        shell: pwsh
+        run: |
+          .venv\Scripts\python.exe -m eval.run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

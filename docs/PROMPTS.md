@@ -39,8 +39,9 @@ fork of it) needs to replay any step.
 | 20 | Qdrant vector store option | ✅ Done | `adapters/retriever_qdrant.py`, same `Retriever` port/skeleton-index contract, `chroma` stays the default in `config.yaml`. |
 | 21 | Docker packaging | ✅ Done | `docker-compose.yml` + `Dockerfile`: Ollama stays native (`host.docker.internal`), named volume `forge_data` (not a Windows bind mount, per the documented SQLite-locking lesson). |
 | 22 | DuckDB analytics | ❌ **Not implemented** | No `app/stats.py`, no `duckdb` in `requirements.txt`/`requirements.lock`. Marked lowest-priority/optional in the original doc ("do it last or skip it") — looks skipped rather than missed. |
+| 23 | Retrieval-quality eval harness | ✅ Done | `eval/dataset.yaml` (11 cases against the indexed rag-frontend-angular-v2 repo), `eval/run.py` (`python -m eval.run`, `--k`, `--min-hit-at-k`, `--compare`/`--compare-k`/`--compare-config`), wired as a CI gate in `.github/workflows/retrieval-eval.yml` (self-hosted runner — reuses the machine's already-running Ollama and already-indexed `.data/chroma`, since that state is gitignored and not reproducible on a stock hosted runner). `core/`, `product/code_source.py`, `product/approval.py`, the existing adapters, and `app/ask.py` untouched — verified via `git diff --stat`. |
 
-### Net: 21 of 22 done, 1 skipped
+### Net: 22 of 23 done, 1 skipped
 
 - **Only real gap left:** Prompt 22 (DuckDB analytics) was never built. It was flagged as the lowest-value item in the original doc, so this may be an intentional skip rather than an oversight — confirm before treating it as backlog.
 - **Prompt 1 landed (2026-07-31)**, extended beyond its original Java-only scope to also cover JS/TS, since the project's daily-driver repo is Angular/TypeScript (Go was built too, then deliberately dropped as unused). See the plan at the time: "Reinstate tree-sitter for JS/TS/Go/Java symbol chunking". `.xml`/`.properties` indexing remains a small, separate follow-up if Java/Spring config-file awareness is still wanted. The one open thread from this change is the RRF tie-break nuance noted in the table above — narrow, well-diagnosed, deliberately left alone rather than risking a regression to the case the current tie-break rule was built for.
@@ -558,6 +559,7 @@ Requirements:
   llm and embeddings stay local and free.
 
 Acceptance check: with code_model switched to the hosted adapter and llm still
+
 on Ollama, run a full task. Confirm it works and show me the git diff proving
 core/ and product/ were untouched.
 ```
@@ -858,3 +860,77 @@ Acceptance:
 Skipped on purpose: Cloudflare/HF deployment (no GPU, needs a tunnel — wrong fit
 for local inference), and a generic database MCP tool (only useful if the target
 app has a DB you want Forge to query — say so and we'll add it then).
+
+---
+
+## Prompt 23 — Retrieval-quality eval harness (regression gate)
+
+> **In plain terms:** a fixed quiz with known right answers for the retriever — did the correct file/symbol come back — graded automatically so a chunking or config change can be proven better or worse instead of eyeballed, and wired into CI as a gate.
+
+```
+Add an evaluation harness that measures RETRIEVAL quality against a fixed set of
+questions with known-correct answers. Additive only — follow the additive primer:
+do not modify core/, product/code_source.py, product/approval.py, the existing
+adapters, or app/ask.py. This is a new, self-contained tool.
+
+WHY retrieval and not answer text: retrieval has a definite right answer (did the
+correct file/symbol come back?), so it can be scored automatically. Judging prose
+quality is subjective and comes later.
+
+Requirements:
+1. A dataset file eval/dataset.yaml — a list of cases, each:
+     - question: "how does customauth authenticate a user"
+       expect_files: ["UmsUserDetailsService.java"]     # substring match on cited path
+       expect_symbols: ["loadUserByUsername"]           # optional, symbol-name match
+   Seed it with 8-10 cases for the indexed repo. Make it easy to add more.
+
+2. A runner: python -m eval.run
+   - For each case, call the EXISTING retriever (retriever.search) and check
+     whether the expected files/symbols appear in the top-k results.
+   - Compute and print these standard metrics:
+       * hit@k        — fraction of cases where at least one expected item is in top-k
+       * MRR          — mean reciprocal rank of the first correct hit
+       * precision@k  — of the top-k returned, fraction that are relevant
+   - Print a per-case PASS/FAIL table AND the summary metrics.
+   - Support --k to override top-k so I can see how metrics change with k.
+   - Exit non-zero if hit@k drops below a configurable threshold (so it can act
+     as a regression gate later).
+
+3. A compare mode: python -m eval.run --compare
+   - Runs the suite twice with two configs (e.g. two different top_k values, or
+     before/after I change chunking) and prints a side-by-side metric table so I
+     can see if a change helped or hurt.
+
+4. Keep it dependency-light. No new heavy libraries; plain Python + the existing
+   retriever is enough.
+
+Acceptance check:
+- python -m eval.run prints a per-case table and hit@k / MRR / precision@k.
+- Deliberately worsen retrieval (e.g. set top_k=1) and confirm the metrics drop
+  and the exit code flips — proving the harness actually measures quality.
+- Show git diff proving the protected files are untouched.
+```
+
+Landed 2026-08-03: `eval/dataset.yaml` (11 cases against the indexed
+rag-frontend-angular-v2 repo — real file/symbol pairs pulled from the live
+Chroma index, not invented), `eval/run.py` (per-case PASS/FAIL table,
+hit@k/MRR/precision@k, `--k`, `--min-hit-at-k` default 0.7, `--compare` with
+`--compare-k`/`--compare-config`). Verified the harness actually discriminates:
+at the configured `top_k=8`, hit@8=1.000 (exit 0); forcing `--k 1` drops
+hit@1 to 0.636 and flips the exit code to 1.
+
+Then wired as a CI gate: `.github/workflows/retrieval-eval.yml`, triggered on
+push/PR to `main` plus manual dispatch, `runs-on: self-hosted`. No
+GitHub-hosted-runner path exists for this job — the Chroma index, lexical
+DB, and `.env` are all gitignored local state (see `.gitignore`), and Ollama
+(embeddings) has to already be serving on the runner's machine; a stock
+`ubuntu-latest` runner starts with none of that and there's no cheap way to
+build it fresh on every run. The checkout step uses `clean: false` so the
+default `git clean -ffdx` doesn't wipe `.venv/`/`.env`/`.data/` between runs
+— only tracked files (the code under test) get updated.
+
+**Open item:** no self-hosted runner is registered on `ranjithpotlapelly/forge`
+yet (`gh api repos/.../actions/runners` → zero) — the workflow file alone
+won't execute anything until one is registered on this machine (repo Settings
+→ Actions → Runners → New self-hosted runner; a one-time interactive step,
+left to be done by hand rather than automated).
