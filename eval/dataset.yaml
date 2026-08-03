@@ -1,0 +1,70 @@
+# Retrieval eval cases for eval/run.py.
+#
+# Each case is a question with a known-correct answer, scored automatically
+# by checking whether the search results cite the right file (and, optionally,
+# the right symbol within it) -- see eval/run.py's docstring for why retrieval
+# (not answer text) is what gets measured here.
+#
+# Written against whatever repo is currently indexed into ./.data/chroma +
+# ./.data/lexical.db (config.yaml's forge.repo_path / the last `python -m
+# app.index <path>` run) -- right now that's rag-frontend-angular-v2. If you
+# re-point the index at a different repo, these cases will mostly miss; swap
+# in cases for the new repo instead of trying to make the harness cope with
+# both.
+#
+# Fields:
+#   question:       the query sent to retriever.search()
+#   expect_files:    substring(s) matched against the result chunk's
+#                    metadata["path"] -- at least one must match (case-sensitive,
+#                    since real paths are)
+#   expect_symbols:  optional substring(s) matched against metadata["symbol"]
+#                    (case-insensitive). When given, a hit additionally
+#                    requires a symbol match, not just the file -- use this to
+#                    pin down which chunk within a multi-chunk file counts.
+#
+# Add more cases as the indexed repo grows or the questions people actually
+# ask reveal a gap -- just append another list entry in this same shape.
+
+- question: "how does the app authenticate a user and store the auth token"
+  expect_files: ["auth.service.ts"]
+  expect_symbols: ["login", "storeToken"]
+
+- question: "where is the http interceptor that attaches the auth token to outgoing requests"
+  expect_files: ["auth.interceptor.ts"]
+  expect_symbols: ["authInterceptor"]
+
+- question: "what guard prevents unauthenticated users from accessing protected routes"
+  expect_files: ["auth.guard.ts"]
+  expect_symbols: ["authGuard"]
+
+- question: "how does the chat component send a question to the backend"
+  expect_files: ["chat.component.ts"]
+  expect_symbols: ["send", "ask"]
+
+- question: "how does file upload handle drag and drop of a file"
+  expect_files: ["upload.component.ts"]
+  expect_symbols: ["onDrop", "onDragOver", "handle"]
+
+- question: "where does upload status get polled after a file is uploaded"
+  expect_files: ["upload.component.ts"]
+  expect_symbols: ["startPolling"]
+
+- question: "how does the dashboard compute query and document usage percentages"
+  expect_files: ["dashboard.component.ts"]
+  expect_symbols: ["queryPct", "docPct"]
+
+- question: "what happens when the user logs out from the app shell"
+  expect_files: ["shell.component.ts"]
+  expect_symbols: ["logout"]
+
+- question: "where is checkout for billing plans implemented"
+  expect_files: ["rag.service.ts"]
+  expect_symbols: ["checkout"]
+
+- question: "what typescript interfaces define the query request and response shapes"
+  expect_files: ["models.ts"]
+  expect_symbols: ["QueryRequest", "QueryResponse"]
+
+- question: "how does the signup form submit a new user"
+  expect_files: ["signup.component.ts"]
+  expect_symbols: ["submit"]
