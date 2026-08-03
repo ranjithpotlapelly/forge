@@ -496,7 +496,30 @@ any errors.
 | `push`/`open_pr` fails with a git object-directory error | `forge.repo_path`'s host directory is bind-mounted read-only (`:ro`) — Forge's sandbox clone can commit fine, but can't push back into a read-only source. Either make the mount read-write, or treat push as a manual step done outside Forge once tests pass |
 | A JS/TS `run_tests` step needs a browser | The image installs `nodejs`/`npm`/`chromium` and sets `CHROME_BIN`; a project's own `npm test` still needs its own karma/jasmine (or equivalent) config and devDependencies — Forge doesn't scaffold those for you |
 | `prepare_workspace` fails with "is not a git repository" | `repo_path` isn't the exact directory containing `.git` — check `git rev-parse --show-toplevel` on the real repo and point `repo_path` at that, even if it's not where `package.json`/`pom.xml` lives (`run_tests` searches one level down for those on its own) |
-| A plan targets the wrong file for an obviously-relevant query | Check both retriever halves directly: `retriever.search(query, k=...)` (semantic+lexical fused) and, if it's a non-Python file, whether the literal text you expect is even in a *content*-indexed column — `adapters/retriever_fts.py`'s FTS5 table only started indexing `content` (not just `symbol`/`signature`/`path`) after a real miss; a stale index built before that fix, or one with duplicate stale-path entries from indexing two different roots of the same repo, won't have this signal until you `/index --clear` and re-`/index` |
+| A plan targets the wrong file for an obviously-relevant query | Check both retriever halves directly: `retriever.search(query, k=...)` (semantic+lexical fused) and, if it's a non-Python file, whether the literal text you expect is even in a *content*-indexed column — `adapters/retriever_fts.py`'s FTS5 table only started indexing `content` (not just `symbol`/`signature`/`path`) after a real miss; a stale index built before that fix, or one with duplicate stale-path entries from indexing two different roots of the same repo, won't have this signal until you `/index --clear` and re-`/index`. If it's not a one-off, add the question to `eval/dataset.yaml` and run `python -m eval.run` (Section 11G) — turns a one-time debugging session into a permanent regression case |
+
+**G. Check retrieval quality**
+
+```
+python -m eval.run
+```
+
+Runs `eval/dataset.yaml`'s fixed question set (known-correct
+file/symbol per question) against the live retriever and prints
+hit@k/MRR/precision@k plus a per-case PASS/FAIL table — the systematic
+version of the troubleshooting row above, instead of re-deriving the same
+check by hand each time a plan looks off. `--k` shows how the metrics move
+with top-k; `--compare` (with `--compare-k` or `--compare-config`) runs the
+suite twice and prints a side-by-side table, so a chunking or `top_k`
+change can be shown to have helped or hurt instead of eyeballed. See
+`README.md`'s "Retrieval quality eval" section for the full flag list.
+
+Wired as a CI regression gate — `.github/workflows/retrieval-eval.yml`
+runs this on every push/PR to `main` and fails the job if `hit@k` drops
+below threshold. **Self-hosted runner only**: the Chroma index, lexical
+DB, and `.env` are gitignored local state that only exists on a machine
+already running Ollama with a repo indexed (same constraint as `/index`
+above) — see that workflow file's header comment.
 
 ## 12. Recommendations
 
@@ -653,3 +676,17 @@ protected file touched):**
   retriever adapter (Chroma/Qdrant/FTS/Hybrid) — see
   `app/incremental_index_smoke_test.py`. Java (`.java`) joined the indexed
   languages at the same time.
+- **Retrieval-quality eval harness** (`eval/dataset.yaml` + `eval/run.py`,
+  Section 11G) — a fixed set of questions with known-correct files/symbols,
+  scored automatically through the existing `Retriever.search()`, no new
+  port or interface. Prints hit@k/MRR/precision@k plus a per-case
+  PASS/FAIL table; `--compare` runs it twice (two `top_k` values, or two
+  configs) for a before/after comparison. Wired as a CI regression gate in
+  `.github/workflows/retrieval-eval.yml`, `runs-on: self-hosted` — the
+  Chroma index, lexical DB, and `.env` it depends on are all gitignored
+  local state with no GitHub-hosted-runner equivalent, so the workflow
+  reuses whatever's already indexed on the runner's own machine
+  (`clean: false` on checkout so a normal `git clean -ffdx` doesn't wipe
+  them between runs). No self-hosted runner is registered for this repo
+  yet, so the workflow queues rather than runs until one is (repo Settings
+  → Actions → Runners → New self-hosted runner).

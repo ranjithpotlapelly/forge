@@ -229,6 +229,41 @@ chroma` stays the default; nothing needs to change unless you flip this.
 
 ---
 
+## Retrieval quality eval
+
+`eval/dataset.yaml` + `eval/run.py` — a fixed set of questions with
+known-correct files/symbols for whatever's currently indexed, scored
+automatically: retrieval has a definite right answer (did the correct
+file/symbol come back?), unlike judging answer prose, which needs an LLM
+judge or a human and comes later.
+
+```
+python -m eval.run                          # per-case PASS/FAIL table + hit@k / MRR / precision@k
+python -m eval.run --k 3                    # override top-k
+python -m eval.run --min-hit-at-k 0.8       # regression-gate threshold (default: 0.7)
+python -m eval.run --compare --compare-k 1  # side-by-side: current top_k vs. k=1
+python -m eval.run --compare --compare-config config.staging.yaml  # before/after a chunking change
+```
+
+Exits non-zero when `hit@k` drops below `--min-hit-at-k` — that's the exit
+code `.github/workflows/retrieval-eval.yml` gates on (see below). Add cases
+to `eval/dataset.yaml` as the indexed repo grows or a real question exposes
+a gap — each is just a `question` + `expect_files` (+ optional
+`expect_symbols`) entry; see the comment block at the top of that file.
+
+**CI gate**: `.github/workflows/retrieval-eval.yml` runs `python -m
+eval.run` on every push/PR to `main` (plus manual dispatch), on a
+**self-hosted runner only** — there's no GitHub-hosted-runner path here,
+since the Chroma index, the lexical FTS5 DB, and `.env` are all gitignored
+local state (`.data/*`, see `.gitignore`) that only exists on a machine
+already running `ollama serve` with a repo indexed; a stock `ubuntu-latest`
+runner starts with none of it and there's no cheap way to rebuild it fresh
+on every run. Register a self-hosted runner on this machine (repo Settings
+→ Actions → Runners → New self-hosted runner) for the workflow to actually
+execute — until then the jobs just queue.
+
+---
+
 ## Performance tuning (Phase 23)
 
 On this machine (Ryzen 7 7735U / Radeon 680M iGPU / 16 GB shared RAM,
