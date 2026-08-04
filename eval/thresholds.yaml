@@ -1,0 +1,13 @@
+# Regression-gate thresholds for `python -m eval.gate` (Prompt 26).
+#
+# Each key is optional -- omit one to stop gating on it entirely (eval.gate
+# still prints the underlying metric, it just won't fail the build over it).
+# Lower a value to loosen the gate, raise it to tighten -- no code changes
+# needed either way.
+
+min_hit_at_k: 0.70        # eval.run's hit@k -- see eval/run.py
+min_mrr: 0.50              # eval.run's mean reciprocal rank
+
+# Only checked when eval.gate runs with --with-judge (eval/judge.py's
+# groundedness axis, averaged over scored cases -- 1-5 scale).
+min_groundedness_avg: 4.0

@@ -236,7 +236,7 @@ def print_averages(results: list[JudgeResult]) -> None:
             print(f"  - {r.case.question!r}: groundedness={r.groundedness} -- {r.reasoning}")
 
 
-def _build_judge_llm(cfg: dict) -> tuple[LLMClient, str]:
+def build_judge_llm(cfg: dict) -> tuple[LLMClient, str]:
     """The judge should be at least as capable as the model it's judging
     (build_answer_model -- config.yaml's small/fast answer_model, chosen for
     Q&A latency, not judgment quality) -- a weaker judge is an unreliable
@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     retriever = build_retriever(cfg)
     answer_llm = build_answer_model(cfg)
-    judge_llm, judge_label = _build_judge_llm(cfg)
+    judge_llm, judge_label = build_judge_llm(cfg)
     print(f"[judge] answering with answer_model ({answer_llm.model}), judging with {judge_label}\n")
 
     k = args.k if args.k is not None else cfg["retriever"].get("answer_top_k", 5)

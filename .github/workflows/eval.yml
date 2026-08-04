@@ -1,0 +1,82 @@
+name: Eval gate
+
+# Build-blocking regression gate for AI quality (Prompt 26) -- runs
+# `python -m eval.gate` (eval/gate.py), which checks eval/run.py's retrieval
+# metrics (hit@k, MRR) against eval/thresholds.yaml and fails the job if
+# either drops below its threshold. This supersedes retrieval-eval.yml's
+# narrower hit@k-only check with the same underlying metrics, now compared
+# against named, editable thresholds instead of one hardcoded flag.
+#
+# Runner: still self-hosted, same reason as retrieval-eval.yml -- retrieval
+# needs the already-indexed ./.data/chroma + ./.data/lexical.db and Ollama
+# embeddings (nomic-embed-text), which are local machine state a stock
+# GitHub-hosted runner starts without and can't cheaply rebuild per run.
+#
+# The optional --with-judge path (manual trigger only, see workflow_dispatch
+# below) additionally scores answer groundedness via eval/judge.py. THAT
+# step is deliberately pointed at a hosted OpenAI-compatible endpoint via
+# secrets (CODE_MODEL_*, config.yaml's existing `code_model` slot) rather
+# than assuming Ollama is available -- eval/judge.py's build_judge_llm()
+# already prefers code_model over the local `llm` model for exactly this
+# reason (a judge should be at least as capable as what it's judging), and
+# in general CI should not assume a local model server exists. No secret
+# values are hardcoded here; if CODE_MODEL_* secrets aren't configured on
+# this repo, build_judge_llm() falls back to the local `llm` model (using
+# this runner's own Ollama, same as the plain retrieval gate above).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      with_judge:
+        description: "Also run eval/judge.py's groundedness gate (needs CODE_MODEL_* secrets for a hosted judge, or falls back to local `llm`)"
+        type: boolean
+        default: false
+
+jobs:
+  eval-gate:
+    runs-on: self-hosted
+    env:
+      # Read from repo/org secrets -- never hardcoded. Blank if unset; see
+      # app/wiring.py's build_code_model / adapters/llm_openai_compatible.py
+      # for how a blank model entry is dropped rather than sent as-is.
+      CODE_MODEL_API_KEY: ${{ secrets.CODE_MODEL_API_KEY }}
+      CODE_MODEL_BASE_URL: ${{ secrets.CODE_MODEL_BASE_URL }}
+      CODE_MODEL_NAME: ${{ secrets.CODE_MODEL_NAME }}
+      CODE_MODEL_FALLBACK_1: ${{ secrets.CODE_MODEL_FALLBACK_1 }}
+      CODE_MODEL_FALLBACK_2: ${{ secrets.CODE_MODEL_FALLBACK_2 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Default checkout does `git clean -ffdx`, which would delete the
+          # gitignored .venv/, .env, and .data/ (the Chroma index + lexical
+          # DB) this job depends on. Keep them across runs; checkout still
+          # updates every tracked file (eval/, core/, config.yaml, ...) to
+          # the commit under test.
+          clean: false
+
+      - name: Set up Python environment
+        shell: pwsh
+        run: |
+          if (-not (Test-Path .venv)) {
+            python -m venv .venv
+          }
+          .venv\Scripts\python.exe -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Eval gate (retrieval, always)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.with_judge != true }}
+        shell: pwsh
+        run: |
+          .venv\Scripts\python.exe -m eval.gate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Eval gate (retrieval + judge, manual opt-in)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.with_judge == true }}
+        shell: pwsh
+        run: |
+          .venv\Scripts\python.exe -m eval.gate --with-judge
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
