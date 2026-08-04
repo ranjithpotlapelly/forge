@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 940" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="sq-tk-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#374151" stroke-width="1.5" stroke-linecap="round"/></marker>
+    <marker id="sq-tk-ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#9333ea" stroke-width="1.5" stroke-linecap="round"/></marker>
+    <style>
+      .sq-tk-title{font-size:24px;font-weight:800;fill:#14532d}
+      .sq-tk-sub{font-size:14px;fill:#166534;font-weight:600}
+      .sq-tk-actor{fill:#e7f5ec;stroke:#86c9a4;stroke-width:1.5;rx:8}
+      .sq-tk-atxt{font-size:12.5px;font-weight:700;fill:#14532d}
+      .sq-tk-life{stroke:#c9d3cd;stroke-width:1.4;stroke-dasharray:4 4}
+      .sq-tk-act{fill:#d7ede0;stroke:#86c9a4;stroke-width:1}
+      .sq-tk-msg{stroke:#374151;stroke-width:1.5;fill:none}
+      .sq-tk-ret{stroke:#9333ea;stroke-width:1.4;fill:none;stroke-dasharray:5 3}
+      .sq-tk-mtxt{font-size:11.5px;fill:#1f2937}
+      .sq-tk-rtxt{font-size:11px;fill:#7e22ce;font-style:italic}
+      .sq-tk-gate{fill:#fee2e2;stroke:#dc2626;stroke-width:1.4;rx:6}
+      .sq-tk-gtxt{font-size:11.5px;font-weight:700;fill:#991b1b}
+      .sq-tk-note{fill:#fef9c3;stroke:#d1a207;stroke-width:1;rx:5}
+      .sq-tk-ntxt{font-size:10.5px;fill:#713f12}
+      .sq-tk-loop{fill:none;stroke:#2563eb;stroke-width:1.3;stroke-dasharray:6 3;rx:6}
+      .sq-tk-looptxt{font-size:11px;font-weight:700;fill:#1d4ed8}
+      .sq-tk-hosted{font-size:10px;font-weight:700;fill:#b45309}
+    </style>
+  </defs>
+  <rect width="1120" height="940" fill="#fff"/>
+  <text x="30" y="38" class="sq-tk-title">Forge — Sequence: Fix an Issue → Open PR</text>
+  <text x="30" y="60" class="sq-tk-sub">two human approval gates · sandboxed edits · hosted model for code · test-and-retry</text>
+
+  <g>
+    <rect x="40"  y="82" width="110" height="34" class="sq-tk-actor"/><text x="95"  y="104" text-anchor="middle" class="sq-tk-atxt">User (UI)</text>
+    <rect x="190" y="82" width="120" height="34" class="sq-tk-actor"/><text x="250" y="104" text-anchor="middle" class="sq-tk-atxt">LangGraph</text>
+    <rect x="350" y="82" width="120" height="34" class="sq-tk-actor"/><text x="410" y="104" text-anchor="middle" class="sq-tk-atxt">Retriever</text>
+    <rect x="510" y="82" width="150" height="34" class="sq-tk-actor"/><text x="585" y="104" text-anchor="middle" class="sq-tk-atxt">code_model (hosted)</text>
+    <rect x="700" y="82" width="150" height="34" class="sq-tk-actor"/><text x="775" y="103" text-anchor="middle" class="sq-tk-atxt">Sandbox</text><text x="775" y="99" text-anchor="middle" class="sq-tk-atxt"> </text>
+    <rect x="890" y="82" width="90"  height="34" class="sq-tk-actor"/><text x="935" y="104" text-anchor="middle" class="sq-tk-atxt">Tests</text>
+    <rect x="1010" y="82" width="90" height="34" class="sq-tk-actor"/><text x="1055" y="104" text-anchor="middle" class="sq-tk-atxt">GitHub</text>
+  </g>
+  <line x1="95"   y1="116" x2="95"   y2="910" class="sq-tk-life"/>
+  <line x1="250"  y1="116" x2="250"  y2="910" class="sq-tk-life"/>
+  <line x1="410"  y1="116" x2="410"  y2="910" class="sq-tk-life"/>
+  <line x1="585"  y1="116" x2="585"  y2="910" class="sq-tk-life"/>
+  <line x1="775"  y1="116" x2="775"  y2="910" class="sq-tk-life"/>
+  <line x1="935"  y1="116" x2="935"  y2="910" class="sq-tk-life"/>
+  <line x1="1055" y1="116" x2="1055" y2="910" class="sq-tk-life"/>
+
+  <text x="100" y="146" class="sq-tk-mtxt">1. "fix issue #42"</text>
+  <line x1="95" y1="154" x2="250" y2="154" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <rect x="244" y="154" width="12" height="700" class="sq-tk-act"/>
+
+  <text x="270" y="180" class="sq-tk-mtxt">2. fetch issue #42</text>
+  <line x1="256" y1="188" x2="1055" y2="188" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <text x="270" y="212" class="sq-tk-mtxt">3. prepare workspace (clone → fresh branch)</text>
+  <line x1="256" y1="220" x2="775" y2="220" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <text x="270" y="246" class="sq-tk-mtxt">4. retrieve whole files for edit</text>
+  <line x1="256" y1="254" x2="410" y2="254" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+
+  <text x="270" y="284" class="sq-tk-mtxt">5. plan change (structured ProposedPR)</text>
+  <line x1="256" y1="292" x2="585" y2="292" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <text x="595" y="284" class="sq-tk-hosted">hosted</text>
+  <text x="300" y="316" class="sq-tk-rtxt">6. title, branch, steps</text>
+  <line x1="585" y1="322" x2="256" y2="322" class="sq-tk-ret" marker-end="url(#sq-tk-ad)"/>
+
+  <!-- gate 1 -->
+  <rect x="150" y="338" width="470" height="30" class="sq-tk-gate"/>
+  <text x="160" y="358" class="sq-tk-gtxt">GATE 1 — show plan → User approves BEFORE any file is written  (interrupt + checkpoint)</text>
+  <line x1="250" y1="380" x2="95" y2="380" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <text x="100" y="398" class="sq-tk-mtxt">7. approve ✔</text>
+  <line x1="95" y1="406" x2="250" y2="406" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+
+  <!-- retry loop box -->
+  <rect x="230" y="424" width="740" height="250" class="sq-tk-loop"/>
+  <text x="242" y="442" class="sq-tk-looptxt">loop  [edit → test]  max 3 attempts</text>
+
+  <text x="300" y="470" class="sq-tk-mtxt">8. generate patched method(s)</text>
+  <line x1="256" y1="478" x2="585" y2="478" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <text x="595" y="470" class="sq-tk-hosted">hosted · $</text>
+  <text x="300" y="500" class="sq-tk-rtxt">9. new method body</text>
+  <line x1="585" y1="506" x2="256" y2="506" class="sq-tk-ret" marker-end="url(#sq-tk-ad)"/>
+
+  <text x="300" y="532" class="sq-tk-mtxt">10. write_file (splice by line range)</text>
+  <line x1="256" y1="540" x2="775" y2="540" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <rect x="769" y="540" width="12" height="30" class="sq-tk-act"/>
+
+  <text x="300" y="588" class="sq-tk-mtxt">11. run tests (mvn test)</text>
+  <line x1="256" y1="596" x2="935" y2="596" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <rect x="929" y="596" width="12" height="30" class="sq-tk-act"/>
+  <text x="300" y="626" class="sq-tk-rtxt">12. pass / fail (+ truncated output)</text>
+  <line x1="935" y1="632" x2="256" y2="632" class="sq-tk-ret" marker-end="url(#sq-tk-ad)"/>
+
+  <rect x="300" y="646" width="380" height="22" class="sq-tk-note"/>
+  <text x="308" y="661" class="sq-tk-ntxt">13. fail → feed error back, retry (≤3). pass → exit loop.</text>
+
+  <!-- gate 2 -->
+  <rect x="150" y="690" width="560" height="30" class="sq-tk-gate"/>
+  <text x="160" y="710" class="sq-tk-gtxt">GATE 2 — show final diff + PR body → User approves BEFORE push  (nothing pushed on reject)</text>
+  <line x1="250" y1="732" x2="95" y2="732" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <text x="100" y="750" class="sq-tk-mtxt">14. approve PR ✔</text>
+  <line x1="95" y1="758" x2="250" y2="758" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+
+  <text x="270" y="786" class="sq-tk-mtxt">15. push branch + open_pr</text>
+  <line x1="256" y1="794" x2="1055" y2="794" class="sq-tk-msg" marker-end="url(#sq-tk-a)"/>
+  <text x="300" y="818" class="sq-tk-rtxt">16. PR URL</text>
+  <line x1="1055" y1="824" x2="256" y2="824" class="sq-tk-ret" marker-end="url(#sq-tk-ad)"/>
+  <text x="100" y="850" class="sq-tk-mtxt">17. PR link + optional Slack ping</text>
+  <line x1="250" y1="846" x2="95" y2="846" class="sq-tk-ret" marker-end="url(#sq-tk-ad)"/>
+
+  <text x="30" y="900" class="sq-tk-rtxt">Red = human approval gate (side effects blocked until ✔) · blue = bounded retry · "hosted" = paid model for code quality · edits confined to sandbox branch.</text>
+</svg>

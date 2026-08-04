@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 860" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="ar-tk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="#4b5563" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <style>
+      .tk-title{font-size:24px;font-weight:800;fill:#14532d}
+      .tk-sub{font-size:13px;font-weight:600;fill:#166534}
+      .tk-box{fill:#f7fdf9;stroke:#86c9a4;stroke-width:1.5;rx:12}
+      .tk-hdr{font-size:15px;font-weight:700;fill:#14532d}
+      .tk-txt{font-size:12.5px;fill:#374151}
+      .tk-num{fill:#166534}
+      .tk-numtxt{fill:#fff;font-size:13px;font-weight:700}
+      .tk-edge{stroke:#4b5563;stroke-width:1.6;fill:none}
+      .tk-lbl{font-size:11px;fill:#6b7280;font-weight:600}
+      .tk-note{fill:#fef9c3;stroke:#d1a207;stroke-width:1.5;rx:8}
+      .tk-notetxt{font-size:11.5px;fill:#92400e;font-weight:600}
+      .tk-end{fill:#fef2f2;stroke:#fca5a5;stroke-width:1.5;rx:8}
+      .tk-endtxt{font-size:11px;fill:#991b1b;font-weight:600}
+    </style>
+  </defs>
+
+  <rect width="560" height="860" fill="#ffffff"/>
+  <text x="280" y="34" text-anchor="middle" class="tk-title">Request a Change</text>
+  <text x="280" y="54" text-anchor="middle" class="tk-sub">Flow diagram — Forge Task path, two human approval gates</text>
+
+  <!-- 1 -->
+  <rect x="40" y="80" width="480" height="58" class="tk-box"/>
+  <circle cx="66" cy="103" r="13" class="tk-num"/><text x="66" y="108" text-anchor="middle" class="tk-numtxt">1</text>
+  <text x="90" y="108" class="tk-hdr">You request a change</text>
+  <text x="56" y="128" class="tk-txt">"Fix the login bug"</text>
+  <path class="tk-edge" d="M280 138 L280 156" marker-end="url(#ar-tk)"/>
+
+  <!-- 2 -->
+  <rect x="40" y="156" width="480" height="58" class="tk-box"/>
+  <circle cx="66" cy="179" r="13" class="tk-num"/><text x="66" y="184" text-anchor="middle" class="tk-numtxt">2</text>
+  <text x="90" y="184" class="tk-hdr">Classify intent</text>
+  <text x="56" y="204" class="tk-txt">Routed to the Task flow</text>
+  <path class="tk-edge" d="M280 214 L280 232" marker-end="url(#ar-tk)"/>
+
+  <!-- 3 -->
+  <rect x="40" y="232" width="480" height="58" class="tk-box"/>
+  <circle cx="66" cy="255" r="13" class="tk-num"/><text x="66" y="260" text-anchor="middle" class="tk-numtxt">3</text>
+  <text x="90" y="260" class="tk-hdr">Plan</text>
+  <text x="56" y="280" class="tk-txt">A title, branch, and step-by-step change are proposed</text>
+  <path class="tk-edge" d="M280 290 L280 316" marker-end="url(#ar-tk)"/>
+
+  <!-- decision A: approve plan -->
+  <polygon points="280,316 360,360 280,404 200,360" fill="#fef9c3" stroke="#d1a207" stroke-width="1.5"/>
+  <text x="280" y="356" text-anchor="middle" class="tk-txt">You approve</text>
+  <text x="280" y="372" text-anchor="middle" class="tk-txt">the plan?</text>
+  <path class="tk-edge" d="M200 360 L180 360" marker-end="url(#ar-tk)"/>
+  <text x="150" y="352" class="tk-lbl">no</text>
+  <path class="tk-edge" d="M280 404 L280 428" marker-end="url(#ar-tk)"/>
+  <text x="288" y="418" class="tk-lbl">yes</text>
+
+  <rect x="40" y="326" width="140" height="68" class="tk-end"/>
+  <text x="52" y="348" class="tk-endtxt">Rejected —</text>
+  <text x="52" y="363" class="tk-endtxt">nothing written.</text>
+  <text x="52" y="378" class="tk-endtxt">Run ends here.</text>
+
+  <!-- 5 -->
+  <rect x="40" y="428" width="480" height="58" class="tk-box"/>
+  <circle cx="66" cy="451" r="13" class="tk-num"/><text x="66" y="456" text-anchor="middle" class="tk-numtxt">5</text>
+  <text x="90" y="456" class="tk-hdr">Edit + test</text>
+  <text x="56" y="476" class="tk-txt">Writes the change in the sandbox, runs your real test suite</text>
+  <path class="tk-edge" d="M280 486 L280 504" marker-end="url(#ar-tk)"/>
+
+  <rect x="40" y="504" width="480" height="40" class="tk-note"/>
+  <text x="56" y="528" class="tk-notetxt">↻ up to 3 attempts — a failing test feeds back into the next try</text>
+  <path class="tk-edge" d="M280 544 L280 562" marker-end="url(#ar-tk)"/>
+
+  <!-- 6 -->
+  <rect x="40" y="562" width="480" height="58" class="tk-box"/>
+  <circle cx="66" cy="585" r="13" class="tk-num"/><text x="66" y="590" text-anchor="middle" class="tk-numtxt">6</text>
+  <text x="90" y="590" class="tk-hdr">Commit</text>
+  <text x="56" y="610" class="tk-txt">Once tests pass</text>
+  <path class="tk-edge" d="M280 620 L280 646" marker-end="url(#ar-tk)"/>
+
+  <!-- decision B: approve PR -->
+  <polygon points="280,646 360,690 280,734 200,690" fill="#fef9c3" stroke="#d1a207" stroke-width="1.5"/>
+  <text x="280" y="686" text-anchor="middle" class="tk-txt">You approve</text>
+  <text x="280" y="702" text-anchor="middle" class="tk-txt">the PR?</text>
+  <path class="tk-edge" d="M200 690 L180 690" marker-end="url(#ar-tk)"/>
+  <text x="150" y="682" class="tk-lbl">no</text>
+  <path class="tk-edge" d="M280 734 L280 758" marker-end="url(#ar-tk)"/>
+  <text x="288" y="748" class="tk-lbl">yes</text>
+
+  <rect x="40" y="656" width="140" height="68" class="tk-end"/>
+  <text x="52" y="678" class="tk-endtxt">Not opened —</text>
+  <text x="52" y="693" class="tk-endtxt">diff already</text>
+  <text x="52" y="708" class="tk-endtxt">shown for review.</text>
+
+  <!-- 8 -->
+  <rect x="40" y="758" width="480" height="58" class="tk-box"/>
+  <circle cx="66" cy="781" r="13" class="tk-num"/><text x="66" y="786" text-anchor="middle" class="tk-numtxt">8</text>
+  <text x="90" y="786" class="tk-hdr">Push + open PR</text>
+  <text x="56" y="806" class="tk-txt">Branch pushed, PR opened, Slack pinged</text>
+</svg>

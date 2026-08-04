@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1180" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1 L9 5 L1 9" fill="none" stroke="#4b5563" stroke-width="1.6" stroke-linecap="round"/>
+    </marker>
+    <style>
+      .title{font-size:34px;font-weight:800;fill:#14532d}
+      .sub{font-size:16px;font-weight:600;fill:#166534}
+      .box{fill:#f7fdf9;stroke:#86c9a4;stroke-width:1.5;rx:12}
+      .hdr{font-size:17px;font-weight:700;fill:#14532d}
+      .txt{font-size:12.5px;fill:#374151}
+      .tag{font-size:11px;font-weight:700;fill:#166534}
+      .num{fill:#166534}
+      .numtxt{fill:#fff;font-size:14px;font-weight:700}
+      .prompt{font-size:10.5px;font-weight:700;fill:#b45309}
+      .free{fill:#166534}
+      .freetxt{fill:#fff;font-size:12px;font-weight:800}
+      .edge{stroke:#4b5563;stroke-width:1.6;fill:none}
+      .lbl{font-size:11px;fill:#6b7280;font-weight:600}
+      .diff{fill:#eef2ff;stroke:#818cf8;stroke-width:1.5;rx:10}
+      .difftxt{font-size:11.5px;fill:#3730a3}
+      .diffh{font-size:13px;font-weight:700;fill:#3730a3}
+    </style>
+  </defs>
+
+  <rect width="1000" height="1180" fill="#ffffff"/>
+  <text x="500" y="52" text-anchor="middle" class="title">FORGE — Self-Hosted Repo Copilot</text>
+  <text x="500" y="78" text-anchor="middle" class="sub">Code-aware · Agentic · Approval-gated · Swappable  ·  what I actually built</text>
+
+  <!-- 1 Interface -->
+  <rect x="60" y="110" width="270" height="120" class="box"/>
+  <circle cx="88" cy="138" r="14" class="num"/><text x="88" y="143" text-anchor="middle" class="numtxt">1</text>
+  <text x="112" y="143" class="hdr">Interface</text>
+  <text x="76" y="168" class="txt">Chainlit chat — streaming answers,</text>
+  <text x="76" y="186" class="txt">clickable citations, /index command,</text>
+  <text x="76" y="204" class="txt">Approve / Edit / Reject buttons</text>
+  <text x="76" y="223" class="prompt">Prompts 11, 12</text>
+
+  <!-- 2 Orchestration -->
+  <rect x="380" y="110" width="300" height="120" class="box"/>
+  <circle cx="408" cy="138" r="14" class="num"/><text x="408" y="143" text-anchor="middle" class="numtxt">2</text>
+  <text x="432" y="143" class="hdr">Orchestration</text>
+  <text x="396" y="168" class="txt">LangGraph — router decides:</text>
+  <text x="396" y="186" class="txt">answer · retrieve · task</text>
+  <text x="396" y="204" class="txt">6 nodes, checkpointed state</text>
+  <text x="396" y="223" class="prompt">Prompts 5–8</text>
+
+  <!-- free badge -->
+  <circle cx="726" cy="150" r="26" class="free"/><text x="726" y="146" text-anchor="middle" class="freetxt">$0</text><text x="726" y="162" text-anchor="middle" class="freetxt">local</text>
+
+  <!-- decision -->
+  <polygon points="500,270 590,320 500,370 410,320" fill="#fef9c3" stroke="#d1a207" stroke-width="1.5"/>
+  <text x="500" y="315" text-anchor="middle" class="txt">Question or</text>
+  <text x="500" y="332" text-anchor="middle" class="txt">code task?</text>
+
+  <!-- 3 Knowledge -->
+  <rect x="60" y="410" width="330" height="170" class="box"/>
+  <circle cx="88" cy="438" r="14" class="num"/><text x="88" y="443" text-anchor="middle" class="numtxt">3</text>
+  <text x="112" y="443" class="hdr">Knowledge (code-aware RAG)</text>
+  <text x="76" y="470" class="txt">Chunking: tree-sitter AST — by method/</text>
+  <text x="76" y="488" class="txt">class, not fixed size  (Java, TS, Python)</text>
+  <text x="76" y="510" class="txt">Skeleton index: embed signatures, store</text>
+  <text x="76" y="528" class="txt">pointers → cite file:line, read from disk</text>
+  <text x="76" y="550" class="txt">Store: Chroma (→ Qdrant at scale)</text>
+  <text x="76" y="570" class="prompt">Prompts 1, 10, 20, 23</text>
+
+  <!-- 4 Reasoning -->
+  <rect x="620" y="410" width="320" height="170" class="box"/>
+  <circle cx="648" cy="438" r="14" class="num"/><text x="648" y="443" text-anchor="middle" class="numtxt">4</text>
+  <text x="672" y="443" class="hdr">Reasoning + Model routing</text>
+  <text x="636" y="470" class="txt">Answers → local Ollama (Qwen3) · free</text>
+  <text x="636" y="492" class="txt">Code edits → hosted OpenAI-compatible</text>
+  <text x="636" y="510" class="txt">(OpenRouter) via the code_model slot</text>
+  <text x="636" y="532" class="txt">Swap = 1 adapter + 1 config line</text>
+  <text x="636" y="552" class="txt">Corrective retrieval: self-check + retry</text>
+  <text x="636" y="571" class="prompt">Prompts 2, 17, 25</text>
+  <circle cx="905" cy="450" r="22" class="free"/><text x="905" y="455" text-anchor="middle" class="freetxt">$0</text>
+
+  <!-- 5 Action / tools -->
+  <rect x="620" y="610" width="320" height="150" class="box"/>
+  <circle cx="648" cy="638" r="14" class="num"/><text x="648" y="643" text-anchor="middle" class="numtxt">5</text>
+  <text x="672" y="643" class="hdr">Action — tools (approval-gated)</text>
+  <text x="636" y="670" class="txt">filesystem · git · GitHub issue/PR · Slack</text>
+  <text x="636" y="692" class="txt">Reads run free; writes/commits/push</text>
+  <text x="636" y="710" class="txt">stop for human approval</text>
+  <text x="636" y="732" class="txt">Runs in isolated .data/workspace sandbox</text>
+  <text x="636" y="751" class="prompt">Prompts 9, 13, 19</text>
+
+  <!-- 6 Code agent -->
+  <rect x="620" y="790" width="320" height="140" class="box"/>
+  <circle cx="648" cy="818" r="14" class="num"/><text x="648" y="823" text-anchor="middle" class="numtxt">6</text>
+  <text x="672" y="823" class="hdr">Code Agent — plan/edit/test</text>
+  <text x="636" y="850" class="txt">Plan (structured) → human approve →</text>
+  <text x="636" y="868" class="txt">edit in sandbox → run tests →</text>
+  <text x="636" y="886" class="txt">retry on fail (max 3) → open PR</text>
+  <text x="636" y="906" class="txt">Rewrites whole methods, not diffs</text>
+  <text x="636" y="924" class="prompt">Prompts 4, 6, 7, 8</text>
+
+  <!-- 7 Data / state -->
+  <rect x="60" y="610" width="330" height="150" class="box"/>
+  <circle cx="88" cy="638" r="14" class="num"/><text x="88" y="643" text-anchor="middle" class="numtxt">7</text>
+  <text x="112" y="643" class="hdr">State + Data</text>
+  <text x="76" y="670" class="txt">SQLite — LangGraph checkpoints (resume)</text>
+  <text x="76" y="692" class="txt">+ run history &amp; approval audit trail</text>
+  <text x="76" y="714" class="txt">DuckDB — codebase &amp; run analytics</text>
+  <text x="76" y="733" class="txt">(→ Postgres for concurrent users)</text>
+  <text x="76" y="752" class="prompt">Prompts 14, 15, 22</text>
+
+  <!-- 8 Observability + Eval -->
+  <rect x="60" y="790" width="330" height="140" class="box"/>
+  <circle cx="88" cy="818" r="14" class="num"/><text x="88" y="823" text-anchor="middle" class="numtxt">8</text>
+  <text x="112" y="823" class="hdr">Observability + Evaluation</text>
+  <text x="76" y="850" class="txt">Phoenix — traces every node, tokens,</text>
+  <text x="76" y="868" class="txt">latency, retrieval, failures</text>
+  <text x="76" y="890" class="txt">Eval harness: hit@k · MRR · LLM-judge</text>
+  <text x="76" y="908" class="txt">(groundedness) · CI regression gate</text>
+  <text x="76" y="927" class="prompt">Prompts 6, 23, 24, 26</text>
+
+  <!-- 9 Deployment -->
+  <rect x="60" y="960" width="880" height="90" class="box"/>
+  <circle cx="88" cy="1000" r="14" class="num"/><text x="88" y="1005" text-anchor="middle" class="numtxt">9</text>
+  <text x="112" y="1000" class="hdr">Deployment</text>
+  <text x="230" y="995" class="txt">Docker Compose (app + Chroma + Phoenix) · named volume ·</text>
+  <text x="230" y="1015" class="txt">Ollama stays NATIVE on host (GPU/RAM) · reproducible LOCAL run</text>
+  <text x="230" y="1035" class="prompt">Prompt 21</text>
+  <circle cx="890" cy="1005" r="24" class="free"/><text x="890" y="1010" text-anchor="middle" class="freetxt">$0</text>
+
+  <!-- edges -->
+  <path class="edge" d="M330 170 L378 170" marker-end="url(#ar)"/>
+  <path class="edge" d="M530 230 L510 268" marker-end="url(#ar)"/>
+  <path class="edge" d="M455 345 C360 380, 300 388, 240 408" marker-end="url(#ar)"/>
+  <text x="360" y="392" class="lbl">retrieve</text>
+  <path class="edge" d="M560 345 C650 375, 720 385, 770 408" marker-end="url(#ar)"/>
+  <text x="640" y="392" class="lbl">answer</text>
+  <path class="edge" d="M390 495 L618 495" marker-end="url(#ar)"/>
+  <text x="470" y="488" class="lbl">context</text>
+  <path class="edge" d="M780 580 L780 608" marker-end="url(#ar)"/>
+  <path class="edge" d="M780 760 L780 788" marker-end="url(#ar)"/>
+  <path class="edge" d="M225 580 L225 608" marker-end="url(#ar)"/>
+  <text x="150" y="598" class="lbl">index / state</text>
+  <path class="edge" d="M225 760 L225 788" marker-end="url(#ar)"/>
+  <path class="edge" d="M620 855 C480 860, 360 700, 392 690" marker-end="url(#ar)"/>
+  <text x="430" y="800" class="lbl">writes code</text>
+
+  <!-- differentiators banner -->
+  <rect x="60" y="1075" width="880" height="86" class="diff"/>
+  <text x="80" y="1100" class="diffh">Beyond the generic $0 diagram — what makes this senior-grade:</text>
+  <text x="80" y="1122" class="difftxt">• Code-aware AST retrieval with verifiable file:line citations   • Local/hosted model routing behind one port</text>
+  <text x="80" y="1141" class="difftxt">• Human approval gates + sandboxed edits   • Two-layer evaluation (retrieval metrics + LLM-judge) with CI gating</text>
+  <text x="80" y="1157" class="difftxt">• Ports-and-adapters (hexagonal) — every layer swappable by config, proven by the one-line local→hosted swap</text>
+</svg>

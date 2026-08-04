@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1020 720" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="sq-qa-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#374151" stroke-width="1.5" stroke-linecap="round"/></marker>
+    <marker id="sq-qa-ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#9333ea" stroke-width="1.5" stroke-linecap="round"/></marker>
+    <style>
+      .sq-qa-title{font-size:24px;font-weight:800;fill:#14532d}
+      .sq-qa-sub{font-size:14px;fill:#166534;font-weight:600}
+      .sq-qa-actor{fill:#e7f5ec;stroke:#86c9a4;stroke-width:1.5;rx:8}
+      .sq-qa-atxt{font-size:13px;font-weight:700;fill:#14532d}
+      .sq-qa-life{stroke:#c9d3cd;stroke-width:1.4;stroke-dasharray:4 4}
+      .sq-qa-act{fill:#d7ede0;stroke:#86c9a4;stroke-width:1}
+      .sq-qa-msg{stroke:#374151;stroke-width:1.5;fill:none}
+      .sq-qa-ret{stroke:#9333ea;stroke-width:1.4;fill:none;stroke-dasharray:5 3}
+      .sq-qa-mtxt{font-size:11.5px;fill:#1f2937}
+      .sq-qa-rtxt{font-size:11px;fill:#7e22ce;font-style:italic}
+      .sq-qa-note{fill:#fef9c3;stroke:#d1a207;stroke-width:1;rx:5}
+      .sq-qa-ntxt{font-size:10.5px;fill:#713f12}
+      .sq-qa-local{font-size:10px;font-weight:700;fill:#166534}
+    </style>
+  </defs>
+  <rect width="1020" height="720" fill="#fff"/>
+  <text x="30" y="38" class="sq-qa-title">Forge — Sequence: Ask a Code Question</text>
+  <text x="30" y="60" class="sq-qa-sub">everything local &amp; free · streamed answer with citations</text>
+
+  <!-- actors -->
+  <g>
+    <rect x="40"  y="82" width="120" height="34" class="sq-qa-actor"/><text x="100" y="104" text-anchor="middle" class="sq-qa-atxt">User (UI)</text>
+    <rect x="210" y="82" width="130" height="34" class="sq-qa-actor"/><text x="275" y="104" text-anchor="middle" class="sq-qa-atxt">LangGraph</text>
+    <rect x="395" y="82" width="130" height="34" class="sq-qa-actor"/><text x="460" y="104" text-anchor="middle" class="sq-qa-atxt">Retriever</text>
+    <rect x="580" y="82" width="120" height="34" class="sq-qa-actor"/><text x="640" y="104" text-anchor="middle" class="sq-qa-atxt">Chroma</text>
+    <rect x="740" y="82" width="120" height="34" class="sq-qa-actor"/><text x="800" y="104" text-anchor="middle" class="sq-qa-atxt">Ollama (LLM)</text>
+    <rect x="895" y="82" width="95"  height="34" class="sq-qa-actor"/><text x="942" y="104" text-anchor="middle" class="sq-qa-atxt">Phoenix</text>
+  </g>
+  <!-- lifelines -->
+  <line x1="100" y1="116" x2="100" y2="690" class="sq-qa-life"/>
+  <line x1="275" y1="116" x2="275" y2="690" class="sq-qa-life"/>
+  <line x1="460" y1="116" x2="460" y2="690" class="sq-qa-life"/>
+  <line x1="640" y1="116" x2="640" y2="690" class="sq-qa-life"/>
+  <line x1="800" y1="116" x2="800" y2="690" class="sq-qa-life"/>
+  <line x1="942" y1="116" x2="942" y2="690" class="sq-qa-life"/>
+
+  <!-- messages -->
+  <text x="105" y="150" class="sq-qa-mtxt">1. "how does customauth authenticate a user?"</text>
+  <line x1="100" y1="158" x2="275" y2="158" class="sq-qa-msg" marker-end="url(#sq-qa-a)"/>
+
+  <rect x="269" y="158" width="12" height="470" class="sq-qa-act"/>
+  <text x="200" y="182" class="sq-qa-mtxt">2. route → needs retrieval</text>
+  <path class="sq-qa-msg" d="M275 176 q40 14 0 26" marker-end="url(#sq-qa-a)"/>
+
+  <text x="300" y="212" class="sq-qa-mtxt">3. search(query, k)</text>
+  <line x1="281" y1="220" x2="460" y2="220" class="sq-qa-msg" marker-end="url(#sq-qa-a)"/>
+  <rect x="454" y="220" width="12" height="120" class="sq-qa-act"/>
+
+  <text x="480" y="246" class="sq-qa-mtxt">4. hybrid: lexical + embed(query)</text>
+  <line x1="466" y1="254" x2="640" y2="254" class="sq-qa-msg" marker-end="url(#sq-qa-a)"/>
+  <rect x="634" y="254" width="12" height="40" class="sq-qa-act"/>
+  <text x="490" y="284" class="sq-qa-rtxt">5. top-k chunks + file:line meta</text>
+  <line x1="640" y1="290" x2="466" y2="290" class="sq-qa-ret" marker-end="url(#sq-qa-ad)"/>
+
+  <rect x="352" y="308" width="230" height="26" class="sq-qa-note"/>
+  <text x="360" y="325" class="sq-qa-ntxt">6. read real code from disk (pointers → source), budget to context</text>
+
+  <text x="480" y="360" class="sq-qa-rtxt">7. ranked chunks</text>
+  <line x1="460" y1="366" x2="281" y2="366" class="sq-qa-ret" marker-end="url(#sq-qa-ad)"/>
+
+  <text x="300" y="392" class="sq-qa-mtxt">8. generate(question + code)  · stream</text>
+  <line x1="281" y1="400" x2="800" y2="400" class="sq-qa-msg" marker-end="url(#sq-qa-a)"/>
+  <rect x="794" y="400" width="12" height="150" class="sq-qa-act"/>
+  <text x="812" y="420" class="sq-qa-local">local · $0</text>
+
+  <text x="470" y="440" class="sq-qa-rtxt">9. tokens stream back …</text>
+  <line x1="800" y1="446" x2="281" y2="446" class="sq-qa-ret" marker-end="url(#sq-qa-ad)"/>
+  <line x1="800" y1="470" x2="281" y2="470" class="sq-qa-ret" marker-end="url(#sq-qa-ad)"/>
+  <line x1="800" y1="494" x2="281" y2="494" class="sq-qa-ret" marker-end="url(#sq-qa-ad)"/>
+
+  <text x="105" y="524" class="sq-qa-mtxt">10. stream answer + clickable citations</text>
+  <line x1="275" y1="532" x2="100" y2="532" class="sq-qa-ret" marker-end="url(#sq-qa-ad)"/>
+
+  <rect x="352" y="548" width="250" height="26" class="sq-qa-note"/>
+  <text x="360" y="565" class="sq-qa-ntxt">11. checkpoint turn to SQLite (resume-safe)</text>
+
+  <text x="300" y="600" class="sq-qa-mtxt">12. spans: route, retrieve, tokens, latency</text>
+  <line x1="281" y1="608" x2="942" y2="608" class="sq-qa-msg" marker-end="url(#sq-qa-a)"/>
+
+  <text x="30" y="668" class="sq-qa-rtxt">Solid = call · dashed purple = return/stream · yellow = internal step. No network calls leave the machine.</text>
+</svg>
