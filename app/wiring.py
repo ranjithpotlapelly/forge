@@ -109,6 +109,7 @@ def build_engine(cfg: dict, llm: LLMClient | None = None, retriever: Retriever |
             repo_path=cfg["forge"]["repo_path"],
             workspace=cfg["tools"]["workspace"],
             run_history=build_run_history(cfg),
+            corrective_retrieval=cfg.get("answer", {}).get("corrective_retrieval", False),
         )
     raise ValueError(f"Unknown engine adapter: {adapter}")
 

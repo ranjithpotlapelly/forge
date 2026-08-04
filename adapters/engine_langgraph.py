@@ -158,6 +158,9 @@ class GraphState(TypedDict, total=False):
     question: str
     chunks: list[Chunk]
     answer: Answer
+    # corrective retrieval (additive, config-gated -- see LangGraphEngine.corrective_retrieval)
+    retrieval_verdict: dict
+    correction_fired: bool
     # shared
     intent: str
     # task path
@@ -194,6 +197,98 @@ def has_context(state: GraphState) -> str:
     if chunks and chunks[0].score is not None and chunks[0].score >= MIN_RELEVANCE:
         return "answer"
     return "decline"
+
+# --- corrective retrieval (additive, config-gated -- see LangGraphEngine's
+# corrective_retrieval flag / _build()) -------------------------------------
+# Self-RAG/CRAG-style single correction pass: grade the first retrieval,
+# and if the model says it's insufficient, run ONE more retrieval with a
+# refined query before answering. Nodes below only ever enter the graph when
+# the flag is on (see _build()) -- with it off, retrieve -> has_context is
+# wired exactly as it was before this was added, so behaviour is unchanged.
+
+_GRADE_SYSTEM_PROMPT = (
+    "You are grading whether retrieved code context is sufficient to answer "
+    "a question. Respond with ONLY a single JSON object, no markdown fences, "
+    "no commentary, nothing before or after it: "
+    '{"sufficient": true or false, "missing": "<what specific information is '
+    'missing, or empty string if sufficient>", "refined_query": "<a short, '
+    "concrete search query likely to retrieve the missing information, or "
+    'the original question if sufficient>"}. '
+    "Set sufficient to false only if the context is clearly missing "
+    "something needed to answer the question -- not merely imperfect."
+)
+
+def grade_retrieval(llm: LLMClient, question: str, chunks: list[Chunk]) -> dict:
+    """Asks the model to judge the first retrieval's sufficiency. Fails open
+    (sufficient=True) on any parse/shape problem -- a broken grading call
+    must never block the answer path from proceeding with whatever retrieve()
+    already found."""
+    if not chunks:
+        return {"sufficient": False, "missing": "no chunks retrieved", "refined_query": question}
+    context = "\n\n".join(
+        f"[{c.metadata.get('path', '?')}:{c.metadata.get('start_line', '?')}]\n{c.content}"
+        for c in chunks
+    )
+    messages = [
+        Message(role="system", content=_GRADE_SYSTEM_PROMPT),
+        Message(role="user", content=f"Question: {question}\n\nRetrieved context:\n{context}"),
+    ]
+    raw = llm.generate(messages, format="json")
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("grade response is not a JSON object")
+        return {
+            "sufficient": bool(data.get("sufficient", True)),
+            "missing": str(data.get("missing") or ""),
+            "refined_query": str(data.get("refined_query") or question),
+        }
+    except (json.JSONDecodeError, ValueError):
+        return {"sufficient": True, "missing": "", "refined_query": question}
+
+def grade_retrieval_node(state: GraphState, config: RunnableConfig, llm: LLMClient) -> GraphState:
+    verdict = grade_retrieval(llm, state["question"], state.get("chunks") or [])
+    if not verdict["sufficient"]:
+        print(
+            f"[corrective-retrieval] retrieval graded insufficient -- "
+            f"missing={verdict['missing']!r} refined_query={verdict['refined_query']!r}"
+        )
+        _emit(config, f"Retrieval looked weak -- retrying with refined query: {verdict['refined_query']!r}")
+    return {"retrieval_verdict": verdict}
+
+def route_after_grade(state: GraphState) -> str:
+    verdict = state.get("retrieval_verdict") or {}
+    if verdict.get("sufficient", True):
+        return has_context(state)
+    return "corrective_retrieve"
+
+def corrective_retrieve_node(state: GraphState, retriever: Retriever, k: int = 8) -> GraphState:
+    """The one allowed corrective retry: re-searches with the graded
+    refined_query and merges into the original chunks, deduped by
+    path+start_line and then RE-SORTED by score descending -- has_context()
+    and build_answer_messages() both assume the list is best-first, and the
+    whole point of correcting is that the original top hit was weak, so
+    leaving it first would defeat the correction. This node always routes
+    onward to has_context (see _build()), never back to grade_retrieval --
+    so a correction can fire at most once per run no matter what the merged
+    result would itself grade as."""
+    verdict = state.get("retrieval_verdict") or {}
+    refined_query = verdict.get("refined_query") or state["question"]
+    original = state.get("chunks") or []
+    extra = retriever.search(refined_query, k=k)
+    seen = {(c.metadata.get("path"), c.metadata.get("start_line")) for c in original}
+    merged = list(original)
+    for c in extra:
+        key = (c.metadata.get("path"), c.metadata.get("start_line"))
+        if key not in seen:
+            merged.append(c)
+            seen.add(key)
+    merged.sort(key=lambda c: c.score if c.score is not None else float("-inf"), reverse=True)
+    print(
+        f"[corrective-retrieval] correction fired: refined_query={refined_query!r}, "
+        f"{len(original)} + {len(extra)} -> {len(merged)} chunk(s)"
+    )
+    return {"chunks": merged, "correction_fired": True}
 
 def build_answer_messages(
     question: str, chunks: list[Chunk], max_expanded: int | None = None,
@@ -532,8 +627,15 @@ class LangGraphEngine:
         repo_path: str = ".",
         workspace: str | Path = "./.data/workspace",
         run_history: RunHistory | None = None,
+        corrective_retrieval: bool = False,
     ):
         self.llm, self.retriever, self.k = llm, retriever, k
+        # Additive (default off): when true, _build() wires an extra
+        # grade+retry pass into the Q&A path (see grade_retrieval_node/
+        # corrective_retrieve_node above). When false, the graph is built
+        # exactly as before this flag existed -- no extra nodes, no extra
+        # LLM call, byte-for-byte identical behaviour.
+        self.corrective_retrieval = corrective_retrieval
         self.code_model = code_model
         self.read_tool, self.write_tool, self.prepare_tool = read_tool, write_tool, prepare_tool
         self.run_tests_tool, self.commit_tool = run_tests_tool, commit_tool
@@ -569,6 +671,9 @@ class LangGraphEngine:
         g = StateGraph(GraphState)
         g.add_node("classify_intent", _instrumented("classify_intent", partial(classify_intent, llm=self.llm)))
         g.add_node("retrieve", _instrumented("retrieve", partial(retrieve, retriever=self.retriever, k=self.k)))
+        if self.corrective_retrieval:
+            g.add_node("grade_retrieval", _instrumented("grade_retrieval", partial(grade_retrieval_node, llm=self.llm)))
+            g.add_node("corrective_retrieve", _instrumented("corrective_retrieve", partial(corrective_retrieve_node, retriever=self.retriever, k=self.k)))
         g.add_node("answer", _instrumented("answer", partial(answer, llm=self.llm)))
         g.add_node("decline", _instrumented("decline", decline))
         g.add_node("prepare_workspace", _instrumented("prepare_workspace", partial(
@@ -598,7 +703,15 @@ class LangGraphEngine:
         g.set_entry_point("classify_intent")
         g.add_conditional_edges("classify_intent", route_intent, {"question": "retrieve", "task": "prepare_workspace"})
 
-        g.add_conditional_edges("retrieve", has_context, {"answer": "answer", "decline": "decline"})
+        if self.corrective_retrieval:
+            g.add_edge("retrieve", "grade_retrieval")
+            g.add_conditional_edges(
+                "grade_retrieval", route_after_grade,
+                {"answer": "answer", "decline": "decline", "corrective_retrieve": "corrective_retrieve"},
+            )
+            g.add_conditional_edges("corrective_retrieve", has_context, {"answer": "answer", "decline": "decline"})
+        else:
+            g.add_conditional_edges("retrieve", has_context, {"answer": "answer", "decline": "decline"})
         g.add_edge("answer", END)
         g.add_edge("decline", END)
 
