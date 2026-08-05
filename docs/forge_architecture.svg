@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1180" font-family="Segoe UI, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1370" font-family="Segoe UI, Arial, sans-serif">
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M1 1 L9 5 L1 9" fill="none" stroke="#4b5563" stroke-width="1.6" stroke-linecap="round"/>
@@ -23,7 +23,7 @@
     </style>
   </defs>
 
-  <rect width="1000" height="1180" fill="#ffffff"/>
+  <rect width="1000" height="1370" fill="#ffffff"/>
   <text x="500" y="52" text-anchor="middle" class="title">FORGE — Self-Hosted Repo Copilot</text>
   <text x="500" y="78" text-anchor="middle" class="sub">Code-aware · Agentic · Approval-gated · Swappable  ·  what I actually built</text>
 
@@ -142,10 +142,21 @@
   <path class="edge" d="M620 855 C480 860, 360 700, 392 690" marker-end="url(#ar)"/>
   <text x="430" y="800" class="lbl">writes code</text>
 
+  <!-- 10 Dependency Graph (GraphRAG-lite) -->
+  <rect x="60" y="1075" width="880" height="145" class="box"/>
+  <circle cx="88" cy="1103" r="14" class="num"/><text x="88" y="1108" text-anchor="middle" class="numtxt">10</text>
+  <text x="112" y="1108" class="hdr">Dependency Graph (GraphRAG-lite) — optional, off by default</text>
+  <text x="76" y="1135" class="txt">Call-graph over Java + TypeScript only — new core/code_graph.py port +</text>
+  <text x="76" y="1153" class="txt">adapters/code_graph_sqlite.py store, built separately via python -m app.index_graph</text>
+  <text x="76" y="1171" class="txt">Exact "what calls X" queries skip the LLM — deterministic, real citations</text>
+  <text x="76" y="1189" class="txt">Fuzzy questions ("how does auth work", "explain this module") still need the LLM as</text>
+  <text x="76" y="1207" class="txt">always — the graph only adds 1-hop context to that call, it doesn't replace it</text>
+  <text x="924" y="1207" text-anchor="end" class="prompt">Prompt 27</text>
+
   <!-- differentiators banner -->
-  <rect x="60" y="1075" width="880" height="86" class="diff"/>
-  <text x="80" y="1100" class="diffh">Beyond the generic $0 diagram — what makes this senior-grade:</text>
-  <text x="80" y="1122" class="difftxt">• Code-aware AST retrieval with verifiable file:line citations   • Local/hosted model routing behind one port</text>
-  <text x="80" y="1141" class="difftxt">• Human approval gates + sandboxed edits   • Two-layer evaluation (retrieval metrics + LLM-judge) with CI gating</text>
-  <text x="80" y="1157" class="difftxt">• Ports-and-adapters (hexagonal) — every layer swappable by config, proven by the one-line local→hosted swap</text>
+  <rect x="60" y="1245" width="880" height="110" class="diff"/>
+  <text x="80" y="1270" class="diffh">Beyond the generic $0 diagram — what makes this senior-grade:</text>
+  <text x="80" y="1292" class="difftxt">• Code-aware AST retrieval with verifiable file:line citations   • Local/hosted model routing behind one port</text>
+  <text x="80" y="1311" class="difftxt">• Human approval gates + sandboxed edits   • Two-layer evaluation (retrieval metrics + LLM-judge) with CI gating</text>
+  <text x="80" y="1330" class="difftxt">• Ports-and-adapters + structural graph retrieval — every layer swappable by config, "what calls X" answered deterministically</text>
 </svg>
