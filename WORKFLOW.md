@@ -690,3 +690,37 @@ protected file touched):**
   them between runs). No self-hosted runner is registered for this repo
   yet, so the workflow queues rather than runs until one is (repo Settings
   → Actions → Runners → New self-hosted runner).
+- **LLM-as-judge for answer quality** (`eval/judge.py`, Prompt 24) — scores
+  a generated answer against a reference on correctness/groundedness/
+  relevance (1-5 each, strict JSON), for dataset cases that carry a
+  `reference` field. Flags low-groundedness cases as likely hallucinations.
+  `build_judge_llm()` prefers `code_model` over the local `llm` model (a
+  judge should be at least as capable as what it's judging), falling back
+  to `llm` if `code_model` isn't configured.
+- **Corrective retrieval / self-RAG** (`adapters/engine_langgraph.py`,
+  Prompt 25) — gated by `answer.corrective_retrieval` (default off). After
+  the first retrieval, the model grades whether the chunks are sufficient;
+  if not, one corrective pass runs with a refined query and the results are
+  merged and re-sorted by score before answering. With the flag off, the
+  graph never adds the grading/correction nodes at all — identical to
+  before this existed.
+- **Eval regression gate** (`eval/gate.py`, Prompt 26) — a single pass/fail
+  check combining `eval/run.py`'s hit@k/MRR with an optional
+  `eval/judge.py` groundedness pass, against named thresholds in
+  `eval/thresholds.yaml`. CI: `.github/workflows/eval.yml`, self-hosted for
+  the same reason as `retrieval-eval.yml` above; a `workflow_dispatch`
+  input opts into the judge pass, which points at a hosted endpoint via
+  `CODE_MODEL_*` secrets rather than assuming local Ollama in CI.
+  Supersedes `retrieval-eval.yml`'s narrower hardcoded hit@k check.
+- **GraphRAG-lite: optional code dependency graph** (`core/code_graph.py`,
+  `adapters/code_graph_sqlite.py`, `adapters/code_graph_extract.py`,
+  `product/code_graph.py`, Prompt 27) — a new port/adapter pair for a
+  call-graph over Java + TypeScript only, built separately via
+  `python -m app.index_graph [repo_path]` (never a side effect of the
+  normal `/index`, no incremental mode yet). Wired into
+  `adapters/engine_langgraph.py` behind `retriever.graph_expand` (default
+  off): when on, a retrieved chunk's 1-hop call-graph neighbours join the
+  Q&A context, and "what calls X"/"what breaks if I change X" questions are
+  answered directly from the graph — deterministic, no LLM call. Best-effort
+  bare-name symbol matching, no type resolution (documented limitation, not
+  hidden).

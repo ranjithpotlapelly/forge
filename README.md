@@ -262,6 +262,62 @@ on every run. Register a self-hosted runner on this machine (repo Settings
 → Actions → Runners → New self-hosted runner) for the workflow to actually
 execute — until then the jobs just queue.
 
+**Answer-quality judge**: `eval/judge.py` (`python -m eval.judge`) scores
+the *generated answer*, not just retrieval, for any dataset case that has a
+`reference` field — correctness, groundedness, and relevance, each 1-5, via
+a judge model returning strict JSON. Cases scoring at or below a
+groundedness threshold are flagged as likely hallucinations. The judge
+prefers `code_model` over the local `llm` model (a judge should be at least
+as capable as what it's judging), falling back to `llm` if `code_model`
+isn't configured.
+
+**Combined regression gate**: `eval/gate.py` (`python -m eval.gate`) is the
+single pass/fail check to wire into CI — it runs `eval/run.py`'s retrieval
+metrics and, optionally, `eval/judge.py`'s groundedness pass, against named
+thresholds in `eval/thresholds.yaml` (rather than one hardcoded flag).
+`.github/workflows/eval.yml` runs it on every push/PR to `main` (self-hosted
+runner, same reason as above), with a manual-dispatch option to also run the
+judge pass — that path points at a hosted endpoint via `CODE_MODEL_*`
+secrets instead of assuming Ollama is available in CI. This supersedes
+`retrieval-eval.yml`'s narrower hit@k-only check.
+
+---
+
+## Code dependency graph (GraphRAG-lite)
+
+An optional call-graph over the indexed repo, scoped to **Java + TypeScript
+only**, off by default (`retriever.graph_expand: false` in `config.yaml`).
+Built separately from the normal index:
+
+```
+python -m app.index_graph [repo_path] [--clear]
+```
+
+This never runs as a side effect of `/index` — leaving `graph_expand` at its
+default means the command is simply never invoked and nothing about normal
+Q&A changes. There's no incremental mode yet, only a full rebuild; re-run it
+after `python -m app.index --changed` if you want the graph to track edits.
+
+Flip it on and two things change in the Q&A path
+(`adapters/engine_langgraph.py`):
+
+- A retrieved chunk's 1-hop call-graph neighbors get pulled into the answer
+  context, so "how does X get used" questions see callers/callees the
+  vector search alone might miss.
+- "What calls X" / "who calls X" / "what breaks if I change X"-style
+  questions are answered **directly from the graph**, not the LLM — a
+  deterministic lookup with correct `file:line` citations and no model
+  latency.
+
+Implementation: `core/code_graph.py` (new port — `GraphNode`/`GraphEdge`/
+`CodeGraphStore`), `adapters/code_graph_sqlite.py` (SQLite store,
+best-effort bare-name symbol matching — no type resolution, a documented
+limitation rather than a hidden one), `adapters/code_graph_extract.py` (a
+separate tree-sitter pass that reuses the main indexer's grammar spec so
+symbol names line up), `product/code_graph.py` (the vendor-free "what calls
+X" detection and answering logic). `retriever.adapter` and everything else
+about Q&A is unaffected when this stays off.
+
 ---
 
 ## Performance tuning (Phase 23)

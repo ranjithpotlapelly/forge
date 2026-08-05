@@ -40,8 +40,12 @@ fork of it) needs to replay any step.
 | 21 | Docker packaging | ✅ Done | `docker-compose.yml` + `Dockerfile`: Ollama stays native (`host.docker.internal`), named volume `forge_data` (not a Windows bind mount, per the documented SQLite-locking lesson). |
 | 22 | DuckDB analytics | ❌ **Not implemented** | No `app/stats.py`, no `duckdb` in `requirements.txt`/`requirements.lock`. Marked lowest-priority/optional in the original doc ("do it last or skip it") — looks skipped rather than missed. |
 | 23 | Retrieval-quality eval harness | ✅ Done | `eval/dataset.yaml` (11 cases against the indexed rag-frontend-angular-v2 repo), `eval/run.py` (`python -m eval.run`, `--k`, `--min-hit-at-k`, `--compare`/`--compare-k`/`--compare-config`), wired as a CI gate in `.github/workflows/retrieval-eval.yml` (self-hosted runner — reuses the machine's already-running Ollama and already-indexed `.data/chroma`, since that state is gitignored and not reproducible on a stock hosted runner). `core/`, `product/code_source.py`, `product/approval.py`, the existing adapters, and `app/ask.py` untouched — verified via `git diff --stat`. |
+| 24 | LLM-as-judge for answer quality | ✅ Done | `eval/judge.py` (`python -m eval.judge`): scores QUESTION + ANSWER + CITED SOURCE + REFERENCE on correctness/groundedness/relevance (1-5, strict JSON, one retry on malformed output), flags cases at or below a groundedness threshold as a likely hallucination. `build_judge_llm()` prefers `code_model` over the local `llm` model (a judge should be at least as capable as what it's judging), falling back to `llm` if `code_model` is unavailable. |
+| 25 | Corrective retrieval (self-RAG/CRAG) | ✅ Done | `adapters/engine_langgraph.py`'s Q&A path, gated by `answer.corrective_retrieval` (default off, `config.yaml`). After the first retrieval, the model grades whether the chunks are sufficient; if not, one corrective retrieval pass runs with a refined query and the results are merged and re-sorted by score before answering. With the flag off, `LangGraphEngine._build()` doesn't add the grading/correction nodes at all — the graph is identical to before this existed. Real bug caught during verification: the merge originally kept the weak *original* top chunk first, defeating the correction — fixed by re-sorting the combined list by score. |
+| 26 | Eval regression gate (retrieval + judge) | ✅ Done | `eval/gate.py` (`python -m eval.gate`): a single pass/fail check combining `eval/run.py`'s hit@k/MRR with an optional `eval/judge.py` groundedness pass against named, editable thresholds in `eval/thresholds.yaml`. CI: `.github/workflows/eval.yml` (self-hosted runner, same reason as Prompt 23's), with a `workflow_dispatch` input to opt into the judge pass; that path can point at a hosted endpoint via `CODE_MODEL_*` secrets instead of assuming local Ollama. Supersedes `retrieval-eval.yml`'s narrower hardcoded hit@k-only check with the same metrics compared against named thresholds. |
+| 27 | GraphRAG-lite: optional dependency graph (Java + TypeScript) | ✅ Done | New port `core/code_graph.py` (`GraphNode`/`GraphEdge`/`CodeGraphStore`), `adapters/code_graph_sqlite.py` (SQLite nodes+edges store, best-effort bare-name matching — no type resolution, documented not hidden), `adapters/code_graph_extract.py` (a separate tree-sitter pass reusing `adapters/ingest_fs.py`'s grammar spec + name helpers read-only so symbol names match the main index), `product/code_graph.py` (vendor-free "what calls X"/"what breaks if I change X" detection + answering). Wired into `adapters/engine_langgraph.py` behind `retriever.graph_expand` (default off, `config.yaml`) — verified OFF is structurally identical to before via node-count comparison, not just a flag check. `python -m app.index_graph <path>` builds the graph separately from `/index` (no incremental mode yet — full rebuild only). Scoped to Java + TypeScript per explicit request, not the full `forge.languages` list. |
 
-### Net: 22 of 23 done, 1 skipped
+### Net: 26 of 27 done, 1 skipped
 
 - **Only real gap left:** Prompt 22 (DuckDB analytics) was never built. It was flagged as the lowest-value item in the original doc, so this may be an intentional skip rather than an oversight — confirm before treating it as backlog.
 - **Prompt 1 landed (2026-07-31)**, extended beyond its original Java-only scope to also cover JS/TS, since the project's daily-driver repo is Angular/TypeScript (Go was built too, then deliberately dropped as unused). See the plan at the time: "Reinstate tree-sitter for JS/TS/Go/Java symbol chunking". `.xml`/`.properties` indexing remains a small, separate follow-up if Java/Spring config-file awareness is still wanted. The one open thread from this change is the RRF tie-break nuance noted in the table above — narrow, well-diagnosed, deliberately left alone rather than risking a regression to the case the current tie-break rule was built for.
@@ -934,3 +938,102 @@ yet (`gh api repos/.../actions/runners` → zero) — the workflow file alone
 won't execute anything until one is registered on this machine (repo Settings
 → Actions → Runners → New self-hosted runner; a one-time interactive step,
 left to be done by hand rather than automated).
+
+---
+
+## Prompts 24-27 — additive, landed 2026-08-04/05
+
+Built the same way as 19-23: additive-only, off by default, no protected file
+touched. Not pre-written as spec text in this document beforehand (unlike
+0-18) — logged here retroactively once landed, same as Prompt 23's "Landed"
+note above.
+
+**Prompt 24 — LLM-as-judge for answer quality.** `eval/dataset.yaml`'s
+retrieval cases only check whether the right file/symbol came back, not
+whether the generated *answer* is any good. `eval/judge.py`
+(`python -m eval.judge [--k N] [--config PATH] [--dataset PATH]`) closes that
+gap: for each dataset case with a `reference` answer, it runs the real Q&A
+path, then asks a judge model to score QUESTION + ANSWER + CITED SOURCE +
+REFERENCE on three 1-5 axes — correctness, groundedness, relevance — via a
+strict JSON response format, with one retry on malformed JSON before giving
+up on that case. Cases scoring at or below a groundedness threshold are
+flagged as likely hallucinations for manual review. `build_judge_llm()`
+prefers `code_model` over the local `llm` model (a judge should be at least
+as capable as what it's judging, not the fast/cheap model being judged),
+falling back to `llm` if `code_model` isn't configured or reachable.
+
+**Prompt 25 — Corrective retrieval (self-RAG/CRAG).** Added to
+`adapters/engine_langgraph.py`'s Q&A path, gated by `answer.corrective_retrieval`
+in `config.yaml` (default off — with it off, `LangGraphEngine._build()` never
+even adds the grading/correction nodes, so the graph is byte-for-byte the
+same as before this existed). After the first retrieval, the model grades
+whether the returned chunks are sufficient to answer the question; if not,
+one corrective retrieval pass runs with a refined query, and the extra
+results are merged with the original set. One real bug caught during
+verification: the merge originally kept the *original* (weak) top chunk
+first, defeating the whole point of the correction — fixed by re-sorting the
+merged list by score (original + extra combined) before returning it.
+Verified live against the indexed rag-frontend-angular-v2 repo: "how does
+the app decide which page to show for a given url" — first pass scores all
+below 0.07 (misses `app.routes.ts` entirely), grading catches the miss, the
+refined query finds `app.routes.ts` at 0.36.
+
+**Prompt 26 — Regression gate combining retrieval + judge.** `eval/gate.py`
+(`python -m eval.gate`) is a single pass/fail check: it runs `eval/run.py`'s
+retrieval metrics (hit@k, MRR) and, optionally, `eval/judge.py`'s
+groundedness pass, and compares both against named, editable thresholds in
+`eval/thresholds.yaml` instead of one hardcoded flag. CI workflow
+`.github/workflows/eval.yml` runs on push/PR to `main` (self-hosted runner,
+same reason as Prompt 23's — retrieval needs the already-indexed
+`.data/chroma`/`.data/lexical.db` and a locally-serving Ollama for
+embeddings), with a `workflow_dispatch` boolean input to additionally run
+the judge pass on demand. The judge path is deliberately pointed at a hosted
+OpenAI-compatible endpoint via `CODE_MODEL_*` secrets (the same `code_model`
+slot `config.yaml` already has) rather than assuming Ollama is available in
+CI — no secrets are hardcoded, and it falls back to the runner's local `llm`
+model if those secrets aren't configured. This supersedes
+`retrieval-eval.yml`'s narrower hardcoded hit@k-only check with the same
+underlying metrics, now compared against named thresholds.
+
+**Prompt 27 — GraphRAG-lite: an optional code dependency graph, scoped to
+Java + TypeScript only** per explicit request (not the full `forge.languages`
+list). New port `core/code_graph.py` (`GraphNode`/`GraphEdge`/
+`CodeGraphStore`), `adapters/code_graph_sqlite.py` (SQLite-backed
+nodes+edges store — best-effort bare-name matching, no type resolution,
+documented as a known limitation rather than hidden), `adapters/code_graph_extract.py`
+(a separate tree-sitter extraction pass that reuses `adapters/ingest_fs.py`'s
+grammar spec and name helpers read-only, so extracted symbol names match the
+main index exactly), and `product/code_graph.py` (vendor-free "what calls
+X" / "what breaks if I change X" detection and answering, matched via a
+permissive regex over natural phrasings). Wired into
+`adapters/engine_langgraph.py` behind `retriever.graph_expand` in
+`config.yaml` (default off) — with it on, a top-retrieved chunk's 1-hop
+call-graph neighbours get pulled into Q&A context, and "what calls X"-shaped
+questions are answered directly from the graph instead of retrieval+LLM,
+deterministically and without an LLM call. Verified OFF is structurally
+identical to before via a node-count comparison on the compiled graph (21
+nodes either way), not just a flag check. `python -m app.index_graph
+[repo_path] [--clear]` builds the graph separately from the normal `/index`
+path — it never runs as a side effect of indexing, and there is no
+incremental mode yet, only a full rebuild.
+
+Two real lessons from building this:
+- A naive "walk class bodies only" call-graph extractor misses Angular's
+  functional-guard/interceptor pattern (`export const authInterceptor = (req,
+  next) => {...}`, a top-level `lexical_declaration`, not a class member) —
+  the same gap `adapters/ingest_fs.py`'s chunker already had to special-case
+  for the main index. Fixed before it became a blind spot by testing against
+  a synthetic fixture covering this shape.
+- Python's `pathlib.Path` on native Windows does not resolve Git-Bash-style
+  paths (`/c/Users/...`) to the `C:` drive — always use `C:/...` or `C:\...`
+  for `repo_path` overrides in ad-hoc Windows test scripts.
+
+Live acceptance check against the indexed rag-frontend-angular-v2 repo: "what
+calls getToken" → `authInterceptor` plus 3 `AuthService` methods, each with
+correct file:line citations, ~0.05-0.08s (deterministic, no LLM call) —
+incidentally also confirming two relationships already documented in
+`eval/dataset.yaml` (`authInterceptor` calls both `getToken` and `logout` on
+a 401).
+
+Landed on branch `feature/graphrag` (`31e344b`), merged to `main` at
+`0f53426`.
