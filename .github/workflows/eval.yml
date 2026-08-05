@@ -59,7 +59,7 @@ jobs:
           clean: false
 
       - name: Set up Python environment
-        shell: pwsh
+        shell: powershell
         run: |
           if (-not (Test-Path .venv)) {
             python -m venv .venv
@@ -69,14 +69,14 @@ jobs:
 
       - name: Eval gate (retrieval, always)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.with_judge != true }}
-        shell: pwsh
+        shell: powershell
         run: |
           .venv\Scripts\python.exe -m eval.gate
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Eval gate (retrieval + judge, manual opt-in)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.with_judge == true }}
-        shell: pwsh
+        shell: powershell
         run: |
           .venv\Scripts\python.exe -m eval.gate --with-judge
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

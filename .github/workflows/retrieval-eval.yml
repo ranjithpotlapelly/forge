@@ -35,7 +35,7 @@ jobs:
           clean: false
 
       - name: Set up Python environment
-        shell: pwsh
+        shell: powershell
         run: |
           if (-not (Test-Path .venv)) {
             python -m venv .venv
@@ -44,7 +44,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Retrieval regression gate (hit@k)
-        shell: pwsh
+        shell: powershell
         run: |
           .venv\Scripts\python.exe -m eval.run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
