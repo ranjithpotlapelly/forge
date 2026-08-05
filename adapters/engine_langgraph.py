@@ -66,6 +66,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.graph import StateGraph, END
 from langgraph.types import Command, RunnableConfig, interrupt
 from opentelemetry import trace
+from core.code_graph import CodeGraphStore
 from core.llm import LLMClient
 from core.retriever import Retriever
 from core.run_history import RunHistory
@@ -161,6 +162,7 @@ class GraphState(TypedDict, total=False):
     # corrective retrieval (additive, config-gated -- see LangGraphEngine.corrective_retrieval)
     retrieval_verdict: dict
     correction_fired: bool
+    graph_expanded: bool
     # shared
     intent: str
     # task path
@@ -256,11 +258,22 @@ def grade_retrieval_node(state: GraphState, config: RunnableConfig, llm: LLMClie
         _emit(config, f"Retrieval looked weak -- retrying with refined query: {verdict['refined_query']!r}")
     return {"retrieval_verdict": verdict}
 
-def route_after_grade(state: GraphState) -> str:
+def route_after_grade(state: GraphState, next_if_sufficient: str | None = None) -> str:
+    """next_if_sufficient lets _build() splice graph_expand in ahead of
+    has_context when that flag is on (see route_after_context below) without
+    changing this function's behaviour at all when it's None -- the default,
+    matching pre-Prompt-27 wiring exactly."""
     verdict = state.get("retrieval_verdict") or {}
     if verdict.get("sufficient", True):
-        return has_context(state)
+        return next_if_sufficient or has_context(state)
     return "corrective_retrieve"
+
+def route_after_context(state: GraphState, next_node: str | None = None) -> str:
+    """Shared tail router for both 'corrective_retrieval off' (straight off
+    retrieve) and 'after corrective_retrieve' -- returns next_node
+    (graph_expand) if graph_expand is on, else resolves has_context(state)
+    directly, exactly like every path did before Prompt 27 added this."""
+    return next_node or has_context(state)
 
 def corrective_retrieve_node(state: GraphState, retriever: Retriever, k: int = 8) -> GraphState:
     """The one allowed corrective retry: re-searches with the graded
@@ -354,8 +367,83 @@ def classify_intent(state: GraphState, llm: LLMClient) -> GraphState:
         return {"intent": "task", "task": text}
     return {"intent": "question"}
 
-def route_intent(state: GraphState) -> str:
-    return state.get("intent", "question")
+def route_intent(state: GraphState, graph_fn: Callable[[str], bool] | None = None) -> str:
+    """graph_fn (product.code_graph.is_graph_question, injected) is None
+    unless the graph_expand flag is on, so this returns exactly what it
+    always did -- "question"/"task" -- when the flag is off. When it's on
+    and the message looks like "what calls X", routes to a dedicated
+    graph_answer node instead of the normal retrieve path (see _build())."""
+    intent = state.get("intent", "question")
+    if intent == "question" and graph_fn is not None and graph_fn(state.get("question", "")):
+        return "graph"
+    return intent
+
+# --- dependency graph (additive, config-gated -- see LangGraphEngine's
+# graph_expand flag / _build()) -----------------------------------------
+# Prompt 27: an optional call-graph over the indexed codebase (built
+# separately via `python -m app.index_graph`, adapters/code_graph_extract.py
+# + adapters/code_graph_sqlite.py). Two independent uses, both off unless
+# graph_expand=True: (1) "what calls X"-shaped questions get a direct,
+# deterministic answer from the graph instead of an LLM-generated one; (2)
+# every other Q&A question gets its top retrieved chunks' call-graph
+# neighbours merged into context before answering. Nodes below only ever
+# enter the graph when the flag is on -- with it off, nothing here changes
+# behaviour at all.
+
+def graph_answer_node(state: GraphState, config: RunnableConfig, graph_store: CodeGraphStore, answer_fn: Callable[..., Any]) -> GraphState:
+    """answer_fn is product.code_graph.answer_graph_question, injected so
+    this file never imports product/. Deterministic -- no LLM call -- since
+    "who calls X" has a factual answer once the graph exists, not something
+    worth spending a generation call to phrase."""
+    result = answer_fn(graph_store, state["question"])
+    citations = [
+        Chunk(content="", metadata={"path": c.path, "symbol": c.symbol, "start_line": c.start_line, "end_line": c.end_line})
+        for c in result["callers"]
+    ]
+    _emit(config, f"Answered from the dependency graph ({len(citations)} caller(s) found).")
+    return {"answer": Answer(text=result["text"], citations=citations)}
+
+def graph_expand_node(state: GraphState, config: RunnableConfig, graph_store: CodeGraphStore, repo_path: Path) -> GraphState:
+    """Pulls 1-hop call-graph neighbours (callers + callees) of the top few
+    retrieved chunks' symbols into context, re-sorted so the original
+    top-scored hit stays first -- graph-expanded chunks always carry
+    score=None, which sorts last, so this can only ADD context, never change
+    whether has_context() declines. Reads source directly from repo_path
+    (the indexed repo, not the task-flow's sandboxed workspace) rather than
+    importing product/citations.py's read_lines, to keep this file's
+    no-product-imports rule intact for a few lines of file I/O."""
+    chunks = state.get("chunks") or []
+    if not chunks:
+        return {}
+    seen_keys = {(c.metadata.get("path"), c.metadata.get("start_line")) for c in chunks}
+    seen_symbols: set[str] = set()
+    extra: list[Chunk] = []
+    for c in chunks[:3]:
+        symbol = c.metadata.get("symbol")
+        if not symbol or symbol in ("<file>", "<module>") or symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
+        neighbors = graph_store.callers_of(symbol) + graph_store.callees_of(symbol)
+        for node in neighbors[:5]:
+            key = (node.path, node.start_line)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            try:
+                lines = (repo_path / node.path).read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            content = "\n".join(lines[max(node.start_line - 1, 0):node.end_line])
+            extra.append(Chunk(
+                content=content,
+                metadata={"path": node.path, "symbol": node.symbol, "start_line": node.start_line, "end_line": node.end_line},
+                score=None,
+            ))
+    if extra:
+        print(f"[graph-expand] added {len(extra)} call-graph neighbor chunk(s)")
+    merged = chunks + extra
+    merged.sort(key=lambda c: c.score if c.score is not None else float("-inf"), reverse=True)
+    return {"chunks": merged, "graph_expanded": bool(extra)}
 
 # --- task-path nodes ---------------------------------------------------------
 
@@ -628,6 +716,10 @@ class LangGraphEngine:
         workspace: str | Path = "./.data/workspace",
         run_history: RunHistory | None = None,
         corrective_retrieval: bool = False,
+        graph_store: CodeGraphStore | None = None,
+        graph_expand: bool = False,
+        is_graph_question_fn: Callable[[str], bool] | None = None,
+        answer_graph_question_fn: Callable[..., Any] | None = None,
     ):
         self.llm, self.retriever, self.k = llm, retriever, k
         # Additive (default off): when true, _build() wires an extra
@@ -636,6 +728,17 @@ class LangGraphEngine:
         # exactly as before this flag existed -- no extra nodes, no extra
         # LLM call, byte-for-byte identical behaviour.
         self.corrective_retrieval = corrective_retrieval
+        # Additive (default off, Prompt 27): when true, _build() adds a
+        # dependency-graph shortcut for "what calls X" questions and a
+        # neighbour-expansion pass for every other Q&A question. graph_store
+        # is a core.code_graph.CodeGraphStore; is_graph_question_fn/
+        # answer_graph_question_fn are product.code_graph callables injected
+        # by app/wiring.py, same pattern as plan_fn -- this file still never
+        # imports product/ directly.
+        self.graph_store = graph_store
+        self.graph_expand = graph_expand
+        self.is_graph_question_fn = is_graph_question_fn
+        self.answer_graph_question_fn = answer_graph_question_fn
         self.code_model = code_model
         self.read_tool, self.write_tool, self.prepare_tool = read_tool, write_tool, prepare_tool
         self.run_tests_tool, self.commit_tool = run_tests_tool, commit_tool
@@ -674,6 +777,13 @@ class LangGraphEngine:
         if self.corrective_retrieval:
             g.add_node("grade_retrieval", _instrumented("grade_retrieval", partial(grade_retrieval_node, llm=self.llm)))
             g.add_node("corrective_retrieve", _instrumented("corrective_retrieve", partial(corrective_retrieve_node, retriever=self.retriever, k=self.k)))
+        if self.graph_expand:
+            g.add_node("graph_answer", _instrumented("graph_answer", partial(
+                graph_answer_node, graph_store=self.graph_store, answer_fn=self.answer_graph_question_fn,
+            )))
+            g.add_node("graph_expand", _instrumented("graph_expand", partial(
+                graph_expand_node, graph_store=self.graph_store, repo_path=Path(self.repo_path),
+            )))
         g.add_node("answer", _instrumented("answer", partial(answer, llm=self.llm)))
         g.add_node("decline", _instrumented("decline", decline))
         g.add_node("prepare_workspace", _instrumented("prepare_workspace", partial(
@@ -701,17 +811,39 @@ class LangGraphEngine:
         g.add_node("give_up", _instrumented("give_up", partial(give_up_node, rollback_fn=self.rollback_fn, write_tool=self.write_tool)))
 
         g.set_entry_point("classify_intent")
-        g.add_conditional_edges("classify_intent", route_intent, {"question": "retrieve", "task": "prepare_workspace"})
+        intent_edges = {"question": "retrieve", "task": "prepare_workspace"}
+        if self.graph_expand:
+            intent_edges["graph"] = "graph_answer"
+        g.add_conditional_edges(
+            "classify_intent",
+            partial(route_intent, graph_fn=self.is_graph_question_fn if self.graph_expand else None),
+            intent_edges,
+        )
+        if self.graph_expand:
+            g.add_edge("graph_answer", END)
 
         if self.corrective_retrieval:
             g.add_edge("retrieve", "grade_retrieval")
+            grade_edges = {"answer": "answer", "decline": "decline", "corrective_retrieve": "corrective_retrieve"}
+            if self.graph_expand:
+                grade_edges["graph_expand"] = "graph_expand"
             g.add_conditional_edges(
-                "grade_retrieval", route_after_grade,
-                {"answer": "answer", "decline": "decline", "corrective_retrieve": "corrective_retrieve"},
+                "grade_retrieval",
+                partial(route_after_grade, next_if_sufficient="graph_expand" if self.graph_expand else None),
+                grade_edges,
             )
-            g.add_conditional_edges("corrective_retrieve", has_context, {"answer": "answer", "decline": "decline"})
+            context_edges = {"graph_expand": "graph_expand"} if self.graph_expand else {}
+            g.add_conditional_edges(
+                "corrective_retrieve",
+                partial(route_after_context, next_node="graph_expand" if self.graph_expand else None),
+                {**context_edges, "answer": "answer", "decline": "decline"},
+            )
+        elif self.graph_expand:
+            g.add_edge("retrieve", "graph_expand")
         else:
             g.add_conditional_edges("retrieve", has_context, {"answer": "answer", "decline": "decline"})
+        if self.graph_expand:
+            g.add_conditional_edges("graph_expand", has_context, {"answer": "answer", "decline": "decline"})
         g.add_edge("answer", END)
         g.add_edge("decline", END)
 
