@@ -78,14 +78,22 @@ def build_retriever(cfg: dict) -> Retriever:
     semantic = _build_semantic_retriever(section, cfg)
     return HybridRetriever(semantic=semantic, lexical_path=section.get("lexical_path", "./.data/lexical.db"))
 
+def build_code_graph_store(cfg: dict):
+    """Prompt 27 (additive): separate SQLite file from build_store's forge.db
+    -- see adapters/code_graph_sqlite.py's module docstring for why."""
+    from adapters.code_graph_sqlite import SqliteCodeGraphStore
+    return SqliteCodeGraphStore(path=cfg.get("code_graph", {}).get("path", "./.data/code_graph.db"))
+
 def build_engine(cfg: dict, llm: LLMClient | None = None, retriever: Retriever | None = None) -> Engine:
     section = cfg["engine"]
     adapter = section["adapter"]
     if adapter == "langgraph":
         from adapters.engine_langgraph import LangGraphEngine
         from product.code_edit import apply_plan, commit_changes, open_pr_changes, push_changes, rollback_files
+        from product.code_graph import answer_graph_question, is_graph_question
         from product.planning import make_plan
         tools = {t.name: t for t in build_tools(cfg)}
+        graph_expand = cfg["retriever"].get("graph_expand", False)
         return LangGraphEngine(
             llm=llm or build_llm(cfg),
             retriever=retriever or build_retriever(cfg),
@@ -110,6 +118,10 @@ def build_engine(cfg: dict, llm: LLMClient | None = None, retriever: Retriever |
             workspace=cfg["tools"]["workspace"],
             run_history=build_run_history(cfg),
             corrective_retrieval=cfg.get("answer", {}).get("corrective_retrieval", False),
+            graph_store=build_code_graph_store(cfg) if graph_expand else None,
+            graph_expand=graph_expand,
+            is_graph_question_fn=is_graph_question,
+            answer_graph_question_fn=answer_graph_question,
         )
     raise ValueError(f"Unknown engine adapter: {adapter}")
 

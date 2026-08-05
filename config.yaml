@@ -94,6 +94,19 @@ retriever:
   # of their full body. See adapters/engine_langgraph.py:build_answer_messages.
   answer_top_k: 5
   answer_max_expanded: 4
+  # Prompt 27 (additive, default off): pull 1-hop call-graph neighbours of
+  # the top retrieved chunks into Q&A context, and answer "what calls X"
+  # questions directly from the graph instead of retrieval+LLM. Needs the
+  # graph built first (python -m app.index_graph) -- see code_graph below.
+  graph_expand: false
+
+# --- Optional dependency graph (Prompt 27, additive, default off) ---
+# Built separately from the main index via `python -m app.index_graph`
+# (adapters/code_graph_extract.py + adapters/code_graph_sqlite.py) -- never
+# runs as part of the normal /index path. Scoped to Java + TypeScript only.
+code_graph:
+  path: ./.data/code_graph.db
+  languages: [java, typescript]
 
 # --- Orchestration (Phase 4) ---
 engine:
