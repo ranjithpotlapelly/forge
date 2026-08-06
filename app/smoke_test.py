@@ -32,7 +32,19 @@ def main() -> int:
     installed = list(info)
     print(f"[ok] Ollama reachable at {host} ({len(installed)} model(s) installed)")
 
-    wanted = {cfg["llm"]["model"], cfg["embeddings"]["model"], cfg["code_model"]["model"]}
+    # llm/embeddings are always local. code_model may be hosted (Prompt 17's
+    # OpenAI-compatible adapter, config.yaml's checked-in default) -- only
+    # check it against local Ollama if it's actually configured as one;
+    # "is it installed locally" doesn't apply to a hosted endpoint, and its
+    # config shape differs too (models: a fallback list, not model: a string).
+    wanted = {cfg["llm"]["model"], cfg["embeddings"]["model"]}
+    code_model_adapter = cfg["code_model"]["adapter"]
+    if code_model_adapter == "ollama":
+        wanted.add(cfg["code_model"]["model"])
+    else:
+        hosted_models = [m for m in (cfg["code_model"].get("models") or []) if m] or [cfg["code_model"].get("model")]
+        print(f"     [ok] code_model is hosted ({code_model_adapter}): {', '.join(filter(None, hosted_models)) or '(none configured)'}")
+
     all_present = True
     for m in sorted(wanted):
         base = m.split(":")[0]

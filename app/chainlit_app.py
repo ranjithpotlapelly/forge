@@ -250,6 +250,7 @@ async def _handle_question(question: str, thread_id: str) -> None:
 # --- /index (Phase 16) --------------------------------------------------------
 
 async def _handle_index(path: str, changed_only: bool = False) -> None:
+    global _repo_path
     verb = "Reindexing changed files in" if changed_only else "Indexing"
     progress = cl.Message(content=f"{verb} `{path}`…")
     await progress.send()
@@ -266,6 +267,16 @@ async def _handle_index(path: str, changed_only: bool = False) -> None:
         progress.content = f"{verb} `{path}` failed: {e}"
         await progress.update()
         return
+
+    # _repo_path feeds product.citations.read_lines for every citation-expand
+    # click (see its module docstring). Without this, it stays frozen at
+    # whatever config.yaml's forge.repo_path was at startup -- wrong the
+    # moment /index targets a different repo, and always wrong out of the box
+    # here, since the checked-in default is a Docker-only bind-mount path
+    # that doesn't resolve when Forge runs natively. Update it on every
+    # successful index (full or --changed) so citations always read from
+    # whatever was actually just indexed.
+    _repo_path = path
 
     if changed_only:
         progress.content = (
