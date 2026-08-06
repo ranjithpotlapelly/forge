@@ -28,7 +28,15 @@ from app.config_loader import load_config
 from app.wiring import build_run_history
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TASK = "Add a comment above the greet function explaining what it does"
+# Must reference something that actually exists in whatever forge.repo_path
+# points at -- this test deliberately runs against the real, default config
+# (see the module docstring), not a throwaway fixture with a known greet()
+# function like plan_edit_smoke_test/retry_cap_smoke_test use. AuthService's
+# logout() is a small, low-risk, self-contained method with no existing
+# doc-comment, in the project's checked-in demo target (rag-frontend-angular-v2).
+# (login() was tried and reverted: its multi-line this.http.post(...).pipe(...)
+# leading-dot chain trips the edit step into producing broken TS.)
+TASK = "Add a comment above the logout method in AuthService explaining what it does"
 
 # Deliberately a standalone `python -c` script, not an import of anything in
 # this repo's own test helpers -- it must be runnable as a genuinely
