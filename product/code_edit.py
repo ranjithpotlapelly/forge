@@ -10,6 +10,15 @@ existing files. Instead it asks for just the replacement body of the target
 symbol and splices it in at the start_line/end_line the index already
 recorded, backing up and rolling back on failure, and produces the shown
 diff itself via difflib.
+
+Even with the splice path, the model's raw output is trusted verbatim (see
+write_file) -- there's no line-level repair on either path. Observed
+failure mode: rewriting a symbol whose body is a multi-line fluent chain
+with leading-dot continuations (e.g. `this.http\n  .post(...)\n  .pipe(...)`)
+sometimes comes back missing the leading dots, turning continuations into
+broken standalone statements. Confirmed on both the splice path and the
+whole-file-rewrite retry path, so it's a model output-fidelity issue, not a
+parsing bug in this module.
 """
 from __future__ import annotations
 import ast
