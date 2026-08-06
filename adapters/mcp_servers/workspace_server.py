@@ -161,9 +161,17 @@ def run_tests(timeout_s: int = 300) -> str:
     output_parts: list[str] = []
     exit_code = 0
     for step in steps:
+        # mvn/gradle/npm are batch/shell shims on Windows (npm.cmd, etc.), and
+        # subprocess with a list argv bypasses PATHEXT lookup -- CreateProcess
+        # can't launch them by bare name and fails with WinError 2. which()
+        # applies the same PATHEXT resolution `cmd.exe` would, so this is a
+        # no-op on POSIX (where the bare name already works) and a real fix
+        # on Windows. sys.executable (pytest steps) is already an absolute
+        # path, so which() just returns it unchanged.
+        resolved = shutil.which(step[0]) or step[0]
         try:
             result = subprocess.run(
-                step, cwd=cwd, capture_output=True, text=True,
+                [resolved, *step[1:]], cwd=cwd, capture_output=True, text=True,
                 timeout=timeout_s, stdin=subprocess.DEVNULL,
             )
             exit_code = result.returncode
