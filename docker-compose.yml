@@ -30,6 +30,10 @@ services:
       OLLAMA_HOST: http://host.docker.internal:11434
       # Service-name DNS on the compose network, not localhost.
       PHOENIX_ENDPOINT: http://phoenix:4317
+      # Container-side path under the bind mount below, not the host path in
+      # .env's FORGE_REPO_PATH. Keep the repo name here in sync with the
+      # bind-mounted subfolder if you point this at a different project.
+      FORGE_REPO_PATH: /mnt/host_projects/rag-frontend-angular-v2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -43,7 +47,9 @@ services:
       - forge_data:/app/.data
       # Read-only bind mount so /index can reach repos outside this checkout.
       # Container path, not the Windows path, is what you pass to /index.
-      - C:/Users/Ranjith/Downloads/files:/mnt/host_projects:ro
+      # Mount the PARENT of whatever repo(s) you target, so the container
+      # path below matches FORGE_REPO_PATH above regardless of which repo.
+      - C:/Users/Ranjith/Downloads/RAG_and_Forge/RAG:/mnt/host_projects:ro
     depends_on:
       - phoenix
 

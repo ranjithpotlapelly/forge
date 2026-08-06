@@ -160,7 +160,20 @@ answer:
 
 # --- Forge product settings ---
 forge:
-  repo_path: "/mnt/host_projects/rag-frontend-angular-v2"  # local checkout the task/edit/test pipeline targets (prepare_workspace/run_tests) -- NOT the same as whatever /index was last pointed at, which only widens Q&A retrieval. This is the real git root (matches ranjithpotlapelly/rag-frontend exactly -- .git lives here, not one level down); the Angular app itself is a subfolder (rag-frontend/) of this repo upstream, which is why it's not repo_path itself. run_tests' marker detection searches one level down for exactly this reason.
+  # From .env, same ${VAR} pattern as OLLAMA_HOST/PHOENIX_ENDPOINT above --
+  # docker-compose.yml overrides it to the container-side bind-mount path
+  # (/mnt/host_projects/<repo>) the same way it overrides those. A bare
+  # hardcoded container path here used to be the only value, which meant it
+  # silently broke every native (non-Docker) run: prepare_workspace,
+  # `python -m app.index` with no argument, and retriever.graph_expand's
+  # context reads would all fail or no-op against a path that only resolves
+  # inside the container. Local checkout the task/edit/test pipeline targets
+  # (prepare_workspace/run_tests) -- NOT the same as whatever /index was last
+  # pointed at, which only widens Q&A retrieval. Point this at the real git
+  # root (not a subfolder one level down if the target app lives in one --
+  # run_tests' marker detection already searches one level down for exactly
+  # that case).
+  repo_path: ${FORGE_REPO_PATH}
   languages: [python, javascript, typescript, go, java]
   # Anything that touches the outside world pauses for human approval:
   require_approval_for: [write_file, commit, push, open_pr]

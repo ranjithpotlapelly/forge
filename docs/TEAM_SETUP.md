@@ -57,6 +57,7 @@ Open `.env` and fill in:
 |---|---|---|
 | `OLLAMA_HOST` | No | Ignored by the Docker path — `docker-compose.yml` points the container at `host.docker.internal:11434` for you |
 | `PHOENIX_ENDPOINT` | No | Same — `docker-compose.yml` points it at the `phoenix` container service by name |
+| `FORGE_REPO_PATH` | Only for the task path | Also ignored by the Docker path (see "task path" section below) — Q&A/`/index` don't need it, but leaving it blank breaks `prepare_workspace`, `python -m app.index` with no argument, and `graph_expand`'s context reads |
 | `GITHUB_TOKEN` | Only for `open_pr`/`fetch_issue` | Leave blank to start; Q&A and indexing don't need it |
 | `CODE_MODEL_API_KEY` / `CODE_MODEL_BASE_URL` / `CODE_MODEL_NAME` | Only for the task path's code-edit step | `config.yaml`'s `code_model:` block already points at a hosted, OpenAI-compatible endpoint (e.g. OpenRouter) — Q&A works fine without these, but editing code won't. See README's "Upgrade path" section |
 | `SLACK_WEBHOOK_URL` | No, optional | A Slack Incoming Webhook — if set, Forge posts a short "task complete"/"PR opened" ping. Leave blank and it's silently disabled |
@@ -120,8 +121,11 @@ project:
    - /path/on/your/host:/mnt/host_projects:ro
    ```
    (Windows: `C:/Users/you/projects:/mnt/host_projects:ro`.)
-2. Set `forge.repo_path` in `config.yaml` to the container-side path,
-   e.g. `/mnt/host_projects/your-repo`.
+2. Set `FORGE_REPO_PATH` in `docker-compose.yml`'s `environment:` block
+   (next to `OLLAMA_HOST`/`PHOENIX_ENDPOINT`) to the container-side path,
+   e.g. `/mnt/host_projects/your-repo` — `config.yaml` just reads this via
+   `${FORGE_REPO_PATH}`, same as those two. (For a native, non-Docker run,
+   set the same variable in `.env` instead, to your real host path.)
 3. `docker compose up -d --build` again to pick up the change.
 
 Two things worth knowing: `/index` and `forge.repo_path` are independent —
